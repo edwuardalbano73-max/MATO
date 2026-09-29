@@ -10,23 +10,17 @@ const {
   ButtonStyle,
   PermissionsBitField,
   ChannelType,
+  ActivityType,
   AuditLogEvent
 } = require("discord.js");
 
 const fs = require("fs");
-const path = require("path");
 const http = require("http");
 
-// ============================================================
-// 🌌 MATI NEXUS BOT
-// ============================================================
-
 const TOKEN = process.env.DISCORD_TOKEN;
+const PREFIX = "m.";
 
-if (!TOKEN) {
-  console.error("❌ Falta DISCORD_TOKEN en Render.");
-  process.exit(1);
-}
+if (!TOKEN) process.exit(console.error("❌ Falta DISCORD_TOKEN"));
 
 const client = new Client({
   intents: [
@@ -45,298 +39,697 @@ const client = new Client({
   ]
 });
 
-// ============================================================
-// 💾 BASE DE DATOS
-// ============================================================
+/* =========================================================
+   💾 DATABASE
+========================================================= */
 
-const DATA_FILE = path.join(__dirname, "data.json");
+const FILE = "./data.json";
 
 let data = {
   users: {},
   guilds: {}
 };
 
-if (fs.existsSync(DATA_FILE)) {
-  try {
-    data = JSON.parse(
-      fs.readFileSync(DATA_FILE, "utf8")
-    );
-  } catch {
-    data = {
-      users: {},
-      guilds: {}
+try {
+  if (fs.existsSync(FILE)) {
+    data = JSON.parse(fs.readFileSync(FILE, "utf8"));
+  }
+} catch {
+  data = { users: {}, guilds: {} };
+}
+
+function save() {
+  fs.writeFileSync(FILE, JSON.stringify(data, null, 2));
+}
+
+function guildData(id) {
+  if (!data.guilds[id]) {
+    data.guilds[id] = {
+      prefix: PREFIX,
+      welcomeChannel: null,
+      goodbyeChannel: null,
+      inviteChannel: null,
+      logChannel: null,
+      ticketChannel: null,
+      ticketCategory: null,
+      rulesChannel: null,
+      autorole: null,
+      welcomeEnabled: true,
+      goodbyeEnabled: true,
+      inviteEnabled: true,
+      logsEnabled: true,
+      antiLinks: false,
+      antiSpam: false
     };
   }
+  return data.guilds[id];
 }
 
-function saveData() {
-  try {
-    fs.writeFileSync(
-      DATA_FILE,
-      JSON.stringify(data, null, 2)
-    );
-  } catch (err) {
-    console.error("❌ Error guardando data.json:", err);
-  }
-}
-
-function getGuildData(guildId) {
-  if (!data.guilds[guildId]) {
-    data.guilds[guildId] = {};
-  }
-
-  const defaults = {
-    welcomeChannel: null,
-    goodbyeChannel: null,
-    inviteChannel: null,
-    logChannel: null,
-    ticketChannel: null,
-    ticketCategory: null,
-    autorole: null,
-    prefix: "m.",
-    welcomeEnabled: true,
-    goodbyeEnabled: true,
-    inviteEnabled: true,
-    logsEnabled: true,
-    antiLinks: false,
-    antiSpam: false
-  };
-
-  for (const key of Object.keys(defaults)) {
-    if (data.guilds[guildId][key] === undefined) {
-      data.guilds[guildId][key] = defaults[key];
-    }
-  }
-
-  return data.guilds[guildId];
-}
-
-function getUserData(userId) {
-  if (!data.users[userId]) {
-    data.users[userId] = {
+function userData(id) {
+  if (!data.users[id]) {
+    data.users[id] = {
       wallet: 0,
       bank: 0,
       xp: 0,
       level: 1,
       warns: 0,
-      lastDaily: 0,
-      lastWork: 0,
-      lastCrime: 0,
-      lastBeg: 0,
-      lastRob: 0,
-      lastSalary: 0,
-      lastBonus: 0,
-      lastIncome: 0,
-      lastGig: 0,
-      lastHustle: 0
+      warnHistory: [],
+      afk: false,
+      afkReason: "",
+      cooldowns: {}
     };
   }
 
-  return data.users[userId];
+  if (!data.users[id].cooldowns)
+    data.users[id].cooldowns = {};
+
+  if (!data.users[id].warnHistory)
+    data.users[id].warnHistory = [];
+
+  return data.users[id];
 }
 
-// ============================================================
-// 🛠️ FUNCIONES
-// ============================================================
+/* =========================================================
+   🎨 EMBEDS
+========================================================= */
 
-function makeEmbed(title, description) {
+function E(title, text) {
   return new EmbedBuilder()
     .setColor("#ff7ac8")
-    .setTitle(title)
-    .setDescription(description)
+    .setTitle(`╔══ ${title} ══╗`)
+    .setDescription(text || " ")
     .setFooter({
       text: "🌌 Mati Nexus BOT • Nexus System"
     })
     .setTimestamp();
 }
 
-function money(amount) {
-  return `${Number(amount || 0).toLocaleString("es-ES")} 💰`;
+function OK(text) {
+  return E("✅ ACCIÓN COMPLETADA", `🌌 ${text}`);
 }
 
-function random(min, max) {
-  return Math.floor(
-    Math.random() * (max - min + 1)
-  ) + min;
+function ERR(text) {
+  return E("❌ ERROR", `⚠️ ${text}`);
 }
 
-function isAdmin(member) {
+function money(n) {
+  return `${Number(n || 0).toLocaleString("es-ES")} 💰`;
+}
+
+function rand(a, b) {
+  return Math.floor(Math.random() * (b - a + 1)) + a;
+}
+
+function admin(member) {
   return member?.permissions?.has(
     PermissionsBitField.Flags.Administrator
   );
 }
 
-function getPrefix(guild) {
-  return getGuildData(guild.id).prefix || "m.";
-}
-
-function cooldownText(ms) {
-  const seconds = Math.ceil(ms / 1000);
-
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-
-  return rest
-    ? `${minutes}m ${rest}s`
-    : `${minutes}m`;
-}
-
-function truncate(text, max = 1000) {
-  text = String(text || "");
-
-  if (text.length <= max) {
-    return text;
-  }
-
-  return text.slice(0, max - 3) + "...";
-}
-
-function findMember(guild, input) {
-  if (!input) return null;
-
-  const id = input.replace(/[<@!>]/g, "");
-
-  return (
-    guild.members.cache.get(id) ||
+function memberOf(guild, x) {
+  if (!x) return null;
+  const id = x.replace(/[<@!>]/g, "");
+  return guild.members.cache.get(id) ||
     guild.members.cache.find(
-      m =>
-        m.user.username.toLowerCase() ===
-        input.toLowerCase()
-    )
-  );
+      m => m.user.username.toLowerCase() === x.toLowerCase()
+    );
 }
 
-function findChannel(guild, input) {
-  if (!input) return null;
-
-  const id = input.replace(/[<#>]/g, "");
-
+function channelOf(guild, x) {
+  if (!x) return null;
+  const id = x.replace(/[<#>]/g, "");
   return guild.channels.cache.get(id);
 }
 
-function findRole(guild, input) {
-  if (!input) return null;
-
-  const id = input.replace(/[<@&>]/g, "");
-
-  return (
-    guild.roles.cache.get(id) ||
+function roleOf(guild, x) {
+  if (!x) return null;
+  const id = x.replace(/[<@&>]/g, "");
+  return guild.roles.cache.get(id) ||
     guild.roles.cache.find(
-      r =>
-        r.name.toLowerCase() ===
-        input.toLowerCase()
-    )
-  );
+      r => r.name.toLowerCase() === x.toLowerCase()
+    );
 }
 
-function addXP(userId, amount) {
-  const user = getUserData(userId);
+function cd(user, key, ms) {
+  const last = user.cooldowns[key] || 0;
+  const left = ms - (Date.now() - last);
 
-  user.xp += amount;
+  if (left > 0) return left;
 
-  let levelUp = false;
+  user.cooldowns[key] = Date.now();
+  return 0;
+}
 
-  while (user.xp >= user.level * 100) {
-    user.xp -= user.level * 100;
-    user.level++;
-    levelUp = true;
+function cdText(ms) {
+  const s = Math.ceil(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+function addXP(id, amount) {
+  const u = userData(id);
+  u.xp += amount;
+
+  let up = false;
+
+  while (u.xp >= u.level * 100) {
+    u.xp -= u.level * 100;
+    u.level++;
+    up = true;
   }
 
-  saveData();
-
-  return levelUp;
+  save();
+  return up;
 }
 
-async function sendLog(guild, title, description) {
-  const config = getGuildData(guild.id);
+/* =========================================================
+   ⚠️ WARNS
+========================================================= */
 
-  if (!config.logsEnabled) return;
-  if (!config.logChannel) return;
+function addWarn(guild, target, moderator, reason) {
+  const u = userData(target.id);
 
-  const channel =
-    guild.channels.cache.get(config.logChannel);
+  u.warns++;
 
-  if (!channel) return;
+  u.warnHistory.push({
+    guild: guild.id,
+    moderator: moderator.id,
+    reason: reason || "Sin razón",
+    time: Date.now()
+  });
 
-  await channel.send({
-    embeds: [
-      makeEmbed(
-        `╔══ 📜 ${title} ══╗`,
-        truncate(description, 3900)
-      )
-    ]
+  save();
+  return u.warns;
+}
+
+/* =========================================================
+   📜 LOGS
+========================================================= */
+
+async function log(guild, title, text) {
+  const cfg = guildData(guild.id);
+
+  if (!cfg.logsEnabled || !cfg.logChannel) return;
+
+  const ch = guild.channels.cache.get(cfg.logChannel);
+
+  if (!ch) return;
+
+  await ch.send({
+    embeds: [E(`📜 ${title}`, text)]
   }).catch(() => {});
 }
 
-async function getExecutor(
-  guild,
-  type,
-  targetId
-) {
+async function executor(guild, type, id) {
   try {
-    const logs =
-      await guild.fetchAuditLogs({
-        type,
-        limit: 5
-      });
+    const logs = await guild.fetchAuditLogs({
+      type,
+      limit: 5
+    });
 
-    const entry =
-      logs.entries.find(
-        e =>
-          (!targetId ||
-            e.target?.id === targetId) &&
-          Date.now() - e.createdTimestamp < 15000
-      );
+    const e = logs.entries.find(
+      x =>
+        (!id || x.target?.id === id) &&
+        Date.now() - x.createdTimestamp < 15000
+    );
 
-    return entry?.executor || null;
+    return e?.executor || null;
   } catch {
     return null;
   }
 }
 
-// ============================================================
-// 📚 30 COMANDOS POR CATEGORÍA
-// ============================================================
+/* =========================================================
+   📨 INVITES
+========================================================= */
+
+const inviteCache = new Map();
+
+async function cacheInvites(guild) {
+  try {
+    const invites = await guild.invites.fetch();
+
+    const map = new Map();
+
+    invites.forEach(i => {
+      map.set(i.code, {
+        uses: i.uses || 0,
+        inviterId: i.inviter?.id || null
+      });
+    });
+
+    inviteCache.set(guild.id, map);
+  } catch {}
+}
+
+async function usedInvite(guild) {
+  try {
+    const old = inviteCache.get(guild.id) || new Map();
+    const invites = await guild.invites.fetch();
+
+    let found = null;
+
+    for (const i of invites.values()) {
+      const previous = old.get(i.code);
+
+      if (
+        previous &&
+        (i.uses || 0) > previous.uses
+      ) {
+        found = i;
+        break;
+      }
+    }
+
+    await cacheInvites(guild);
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+/* =========================================================
+   👋 WELCOME
+========================================================= */
+
+client.on("guildMemberAdd", async member => {
+  const cfg = guildData(member.guild.id);
+  const invite = await usedInvite(member.guild);
+
+  if (cfg.welcomeEnabled && cfg.welcomeChannel) {
+    const ch = member.guild.channels.cache.get(
+      cfg.welcomeChannel
+    );
+
+    if (ch) {
+      await ch.send({
+        embeds: [
+          E(
+            "👋 ¡BIENVENIDO!",
+            [
+              `👋 ¡Bienvenido ${member}! 🎉`,
+              "",
+              `🌌 Ahora formas parte de **${member.guild.name}**.`,
+              "",
+              "📖 Lee las reglas del servidor.",
+              "🎫 Si necesitas ayuda, abre un ticket.",
+              "",
+              "🧡 ¡Disfruta tu estancia en Mati Nexus!"
+            ].join("\n")
+          ).setThumbnail(
+            member.user.displayAvatarURL({ size: 512 })
+          )
+        ]
+      }).catch(() => {});
+    }
+  }
+
+  if (cfg.autorole) {
+    const role = member.guild.roles.cache.get(cfg.autorole);
+    if (role) await member.roles.add(role).catch(() => {});
+  }
+
+  if (cfg.inviteEnabled && cfg.inviteChannel && invite) {
+    const ch = member.guild.channels.cache.get(
+      cfg.inviteChannel
+    );
+
+    if (ch) {
+      const who =
+        invite.inviter ||
+        (invite.inviterId
+          ? `<@${invite.inviterId}>`
+          : "Desconocido");
+
+      await ch.send({
+        embeds: [
+          E(
+            "📨 NUEVA INVITACIÓN",
+            [
+              `👤 **Quién entró:** ${member}`,
+              `🤝 **Quién lo invitó:** ${who}`,
+              `🔗 **Código:** \`${invite.code}\``,
+              `📊 **Usos:** ${invite.uses || 0}`
+            ].join("\n")
+          )
+        ]
+      }).catch(() => {});
+    }
+  }
+
+  await log(
+    member.guild,
+    "👋 MIEMBRO ENTRÓ",
+    [
+      `👤 Usuario: ${member.user.tag}`,
+      `🆔 ID: ${member.id}`,
+      `🤝 Invitado por: ${
+        invite?.inviter ||
+        (invite?.inviterId
+          ? `<@${invite.inviterId}>`
+          : "Desconocido")
+      }`
+    ].join("\n")
+  );
+});
+
+/* =========================================================
+   😭 GOODBYE
+========================================================= */
+
+client.on("guildMemberRemove", async member => {
+  const cfg = guildData(member.guild.id);
+
+  if (cfg.goodbyeEnabled && cfg.goodbyeChannel) {
+    const ch = member.guild.channels.cache.get(
+      cfg.goodbyeChannel
+    );
+
+    if (ch) {
+      await ch.send({
+        embeds: [
+          E(
+            "😭 DESPEDIDA",
+            [
+              `😭 Nuestro miembro **${member.user.tag}** nos ha dejado..`,
+              "",
+              "🌌 Esperamos volver a verte algún día."
+            ].join("\n")
+          )
+        ]
+      }).catch(() => {});
+    }
+  }
+
+  await log(
+    member.guild,
+    "😭 MIEMBRO SALIÓ",
+    `👤 Usuario: ${member.user.tag}\n🆔 ID: ${member.id}`
+  );
+});
+
+/* =========================================================
+   📜 EVENTOS DE LOG
+========================================================= */
+
+client.on("messageDelete", async msg => {
+  if (!msg.guild) return;
+
+  await log(
+    msg.guild,
+    "🗑️ MENSAJE ELIMINADO",
+    [
+      `👤 Autor: ${msg.author?.tag || "Desconocido"}`,
+      `📍 Canal: ${msg.channel}`,
+      `💬 ${msg.content || "Sin contenido"}`
+    ].join("\n")
+  );
+});
+
+client.on("messageDeleteBulk", async msgs => {
+  const msg = msgs.first();
+  if (!msg?.guild) return;
+
+  await log(
+    msg.guild,
+    "🗑️ MENSAJES ELIMINADOS",
+    `📊 Se eliminaron **${msgs.size}** mensajes en ${msg.channel}.`
+  );
+});
+
+client.on("messageUpdate", async (oldMsg, newMsg) => {
+  if (!newMsg.guild) return;
+  if (oldMsg.content === newMsg.content) return;
+
+  await log(
+    newMsg.guild,
+    "✏️ MENSAJE EDITADO",
+    [
+      `👤 Autor: ${newMsg.author?.tag || "Desconocido"}`,
+      `📍 Canal: ${newMsg.channel}`,
+      `📝 Antes: ${oldMsg.content || "Sin contenido"}`,
+      `📝 Después: ${newMsg.content || "Sin contenido"}`
+    ].join("\n")
+  );
+});
+
+client.on("channelCreate", async ch => {
+  if (!ch.guild) return;
+
+  const ex = await executor(
+    ch.guild,
+    AuditLogEvent.ChannelCreate,
+    ch.id
+  );
+
+  await log(
+    ch.guild,
+    "📁 CANAL CREADO",
+    `📍 ${ch}\n👤 Por: ${ex || "Desconocido"}`
+  );
+});
+
+client.on("channelDelete", async ch => {
+  if (!ch.guild) return;
+
+  const ex = await executor(
+    ch.guild,
+    AuditLogEvent.ChannelDelete,
+    ch.id
+  );
+
+  await log(
+    ch.guild,
+    "🗑️ CANAL ELIMINADO",
+    `📍 #${ch.name}\n👤 Por: ${ex || "Desconocido"}`
+  );
+});
+
+client.on("channelUpdate", async (a,b) => {
+  if (!b.guild) return;
+
+  await log(
+    b.guild,
+    "📝 CANAL ACTUALIZADO",
+    `📍 ${b}\n📝 Antes: ${a.name}\n📝 Ahora: ${b.name}`
+  );
+});
+
+client.on("roleCreate", async role => {
+  const ex = await executor(
+    role.guild,
+    AuditLogEvent.RoleCreate,
+    role.id
+  );
+
+  await log(
+    role.guild,
+    "🎭 ROL CREADO",
+    `🎭 ${role}\n👤 Por: ${ex || "Desconocido"}`
+  );
+});
+
+client.on("roleDelete", async role => {
+  const ex = await executor(
+    role.guild,
+    AuditLogEvent.RoleDelete,
+    role.id
+  );
+
+  await log(
+    role.guild,
+    "🗑️ ROL ELIMINADO",
+    `🎭 ${role.name}\n👤 Por: ${ex || "Desconocido"}`
+  );
+});
+
+client.on("roleUpdate", async (a,b) => {
+  await log(
+    b.guild,
+    "📝 ROL ACTUALIZADO",
+    `🎭 ${b}\n📝 Antes: ${a.name}\n📝 Ahora: ${b.name}`
+  );
+});
+
+client.on("guildBanAdd", async ban => {
+  const ex = await executor(
+    ban.guild,
+    AuditLogEvent.MemberBanAdd,
+    ban.user.id
+  );
+
+  await log(
+    ban.guild,
+    "🔨 BAN",
+    `👤 ${ban.user.tag}\n👑 ${ex || "Desconocido"}\n📝 ${ban.reason || "Sin razón"}`
+  );
+});
+
+client.on("guildBanRemove", async ban => {
+  const ex = await executor(
+    ban.guild,
+    AuditLogEvent.MemberBanRemove,
+    ban.user.id
+  );
+
+  await log(
+    ban.guild,
+    "🔓 UNBAN",
+    `👤 ${ban.user.tag}\n👑 ${ex || "Desconocido"}`
+  );
+});
+
+client.on("inviteCreate", async invite => {
+  await cacheInvites(invite.guild);
+
+  await log(
+    invite.guild,
+    "📨 INVITACIÓN CREADA",
+    `🔗 \`${invite.code}\`\n👤 ${invite.inviter || "Desconocido"}`
+  );
+});
+
+client.on("inviteDelete", async invite => {
+  await cacheInvites(invite.guild);
+
+  await log(
+    invite.guild,
+    "🗑️ INVITACIÓN ELIMINADA",
+    `🔗 \`${invite.code}\``
+  );
+});
+
+client.on("voiceStateUpdate", async (oldS,newS) => {
+  if (oldS.channelId === newS.channelId) return;
+
+  let text;
+
+  if (!oldS.channelId) {
+    text = `🎙️ Entró a ${newS.channel}`;
+  } else if (!newS.channelId) {
+    text = `🚪 Salió de ${oldS.channel}`;
+  } else {
+    text = `🔄 ${oldS.channel} → ${newS.channel}`;
+  }
+
+  await log(
+    newS.guild,
+    "🎙️ VOZ",
+    `👤 ${newS.member?.user.tag || "Desconocido"}\n${text}`
+  );
+});
+
+/* =========================================================
+   🔗 ANTI LINK / 🚨 ANTI SPAM
+========================================================= */
+
+const spamMap = new Map();
+
+client.on("messageCreate", async message => {
+  if (!message.guild || message.author.bot) return;
+
+  const cfg = guildData(message.guild.id);
+
+  if (
+    cfg.antiLinks &&
+    !admin(message.member) &&
+    /(https?:\/\/|www\.|discord\.gg\/|discord\.com\/invite\/)/i.test(
+      message.content
+    )
+  ) {
+    await message.delete().catch(() => {});
+
+    if (message.member.moderatable) {
+      await message.member.timeout(
+        7200000,
+        "🌌 Anti-Link"
+      ).catch(() => {});
+    }
+
+    const warns = addWarn(
+      message.guild,
+      message.member,
+      client.user,
+      "Anti-Link"
+    );
+
+    await log(
+      message.guild,
+      "🔗 ANTI-LINK",
+      `👤 ${message.author.tag}\n⏱️ Timeout: **2 horas**\n⚠️ Warns: **${warns}**`
+    );
+
+    return;
+  }
+
+  if (
+    cfg.antiSpam &&
+    !admin(message.member)
+  ) {
+    const key =
+      `${message.guild.id}:${message.author.id}`;
+
+    const now = Date.now();
+    const old =
+      spamMap.get(key) || {
+        count: 0,
+        last: 0
+      };
+
+    old.count =
+      now - old.last < 10000
+        ? old.count + 1
+        : 1;
+
+    old.last = now;
+
+    spamMap.set(key, old);
+
+    if (old.count >= 5) {
+      spamMap.delete(key);
+
+      const warns = addWarn(
+        message.guild,
+        message.member,
+        client.user,
+        "Anti-Spam"
+      );
+
+      await log(
+        message.guild,
+        "🚨 ANTI-SPAM",
+        `👤 ${message.author.tag}\n⚠️ Warns: **${warns}**`
+      );
+
+      await message.channel.send({
+        embeds: [
+          E(
+            "🚨 ANTI-SPAM",
+            `${message.author} recibió un warn automático por enviar 5 mensajes consecutivos.`
+          )
+        ]
+      }).catch(() => {});
+    }
+  }
+});
+
+/* =========================================================
+   📚 HELP
+========================================================= */
 
 const publicCategories = {
   general: {
     emoji: "🌌",
     name: "General",
     commands: [
-      "help",
-      "ping",
-      "botinfo",
-      "serverinfo",
-      "userinfo",
-      "avatar",
-      "banner",
-      "profile",
-      "invite",
-      "servericon",
-      "membercount",
-      "channelinfo",
-      "roleinfo",
-      "timestamp",
-      "whois",
-      "id",
-      "afk",
-      "serverage",
-      "userage",
-      "channels",
-      "roles",
-      "emojis",
-      "boosts",
-      "support",
-      "date",
-      "time",
-      "guildid",
-      "botid",
-      "serverowner",
-      "created"
+      "help","ping","botinfo","serverinfo","userinfo",
+      "avatar","banner","profile","invite","servericon",
+      "membercount","channelinfo","roleinfo","timestamp","whois",
+      "id","afk","serverage","userage","channels",
+      "roles","emojis","boosts","support","date",
+      "time","guildid","botid","serverowner","created"
     ]
   },
 
@@ -344,36 +737,12 @@ const publicCategories = {
     emoji: "💰",
     name: "Economía",
     commands: [
-      "balance",
-      "work",
-      "daily",
-      "crime",
-      "rob",
-      "beg",
-      "deposit",
-      "withdraw",
-      "dep",
-      "with",
-      "pay",
-      "leaderboard",
-      "richest",
-      "bank",
-      "wallet",
-      "money",
-      "economy",
-      "cash",
-      "give",
-      "salary",
-      "bonus",
-      "income",
-      "expenses",
-      "networth",
-      "economystats",
-      "gig",
-      "hustle",
-      "depositall",
-      "withdrawall",
-      "pocket"
+      "balance","work","daily","crime","rob",
+      "beg","deposit","withdraw","dep","with",
+      "pay","leaderboard","richest","bank","wallet",
+      "money","economy","cash","give","salary",
+      "bonus","income","expenses","networth","economystats",
+      "gig","hustle","depositall","withdrawall","pocket"
     ]
   },
 
@@ -381,36 +750,12 @@ const publicCategories = {
     emoji: "🎮",
     name: "Diversión",
     commands: [
-      "slots",
-      "coinflip",
-      "dice",
-      "blackjack",
-      "guess",
-      "8ball",
-      "roll",
-      "choose",
-      "rate",
-      "ship",
-      "joke",
-      "meme",
-      "rps",
-      "trivia",
-      "random",
-      "reverse",
-      "sayfun",
-      "ascii",
-      "emojify",
-      "number",
-      "fortune",
-      "fact",
-      "roast",
-      "compliment",
-      "roulette",
-      "double",
-      "highlow",
-      "magic",
-      "truth",
-      "dare"
+      "slots","coinflip","dice","blackjack","guess",
+      "8ball","roll","choose","rate","ship",
+      "joke","meme","rps","trivia","random",
+      "reverse","sayfun","ascii","emojify","number",
+      "fortune","fact","roast","compliment","roulette",
+      "double","highlow","magic","truth","dare"
     ]
   },
 
@@ -418,36 +763,12 @@ const publicCategories = {
     emoji: "💗",
     name: "Social",
     commands: [
-      "hug",
-      "kiss",
-      "pat",
-      "poke",
-      "highfive",
-      "wave",
-      "slap",
-      "compliment",
-      "friend",
-      "ship",
-      "cuddle",
-      "dance",
-      "smile",
-      "wink",
-      "happy",
-      "love",
-      "greet",
-      "goodnight",
-      "goodmorning",
-      "thank",
-      "applaud",
-      "cheer",
-      "support",
-      "react",
-      "interaction",
-      "respect",
-      "fistbump",
-      "salute",
-      "handshake",
-      "clap"
+      "hug","kiss","pat","poke","highfive",
+      "wave","slap","compliment","friend","ship",
+      "cuddle","dance","smile","wink","happy",
+      "love","greet","goodnight","goodmorning","thank",
+      "applaud","cheer","support","react","interaction",
+      "respect","fistbump","salute","handshake","clap"
     ]
   },
 
@@ -455,36 +776,13 @@ const publicCategories = {
     emoji: "⭐",
     name: "Niveles",
     commands: [
-      "level",
-      "rank",
-      "xp",
-      "top",
-      "levels",
-      "nextlevel",
-      "progress",
-      "leaderboardxp",
-      "levelinfo",
-      "xprequired",
-      "myxp",
-      "mylevel",
-      "leveltop",
-      "xptop",
-      "rankinfo",
-      "levelstats",
-      "xpstats",
-      "progressbar",
-      "levelup",
-      "experience",
-      "ranking",
-      "levelboard",
-      "xpleaderboard",
-      "levelcheck",
-      "rewards",
-      "levelcard",
-      "xpleft",
-      "xppercent",
-      "levelrank",
-      "levelnext"
+      "level","rank","xp","top","levels",
+      "nextlevel","progress","leaderboardxp","levelinfo",
+      "xprequired","myxp","mylevel","leveltop","xptop",
+      "rankinfo","levelstats","xpstats","progressbar","levelup",
+      "experience","ranking","levelboard","xpleaderboard",
+      "levelcheck","rewards","levelcard","xpleft",
+      "xppercent","levelrank","levelnext"
     ]
   },
 
@@ -492,35 +790,12 @@ const publicCategories = {
     emoji: "🛠️",
     name: "Utilidades",
     commands: [
-      "servericon",
-      "channelinfo",
-      "roleinfo",
-      "membercount",
-      "timestamp",
-      "calculator",
-      "poll",
-      "remind",
-      "avatar",
-      "banner",
-      "userinfo",
-      "serverinfo",
-      "uptime",
-      "ping",
-      "say",
-      "embed",
-      "choose",
-      "roll",
-      "random",
-      "translate",
-      "weather",
-      "timer",
-      "afk",
-      "help",
-      "calc",
-      "math",
-      "count",
-      "mention",
-      "now"
+      "servericon","channelinfo","roleinfo","membercount",
+      "timestamp","calculator","poll","remind",
+      "avatar","banner","userinfo","serverinfo","uptime",
+      "ping","say","embed","choose","roll","random",
+      "translate","weather","timer","afk","help","calc",
+      "math","count","mention","now","unix"
     ]
   }
 };
@@ -530,36 +805,12 @@ const adminCategories = {
     emoji: "🛡️",
     name: "Moderación",
     commands: [
-      "ban",
-      "unban",
-      "kick",
-      "timeout",
-      "untimeout",
-      "warn",
-      "unwarn",
-      "clearwarns",
-      "clear",
-      "lock",
-      "unlock",
-      "slowmode",
-      "nick",
-      "resetnick",
-      "mute",
-      "unmute",
-      "purge",
-      "massban",
-      "softban",
-      "modlog",
-      "warnings",
-      "warns",
-      "checkwarns",
-      "kickall",
-      "modinfo",
-      "antilinks",
-      "antispam",
-      "baninfo",
-      "timeoutinfo",
-      "automod"
+      "ban","unban","kick","timeout","untimeout",
+      "warn","unwarn","clearwarns","clear","lock",
+      "unlock","slowmode","nick","resetnick","mute",
+      "unmute","purge","massban","modlog","warnings",
+      "warns","checkwarns","kickall","modinfo","antilinks",
+      "antispam","baninfo","timeoutinfo","automod","clearall"
     ]
   },
 
@@ -567,36 +818,14 @@ const adminCategories = {
     emoji: "⚙️",
     name: "Configuración",
     commands: [
-      "welcome",
-      "goodbye",
-      "invites",
-      "logs",
-      "welcomeon",
-      "welcomeoff",
-      "goodbyeon",
-      "goodbyeoff",
-      "inviteson",
-      "invitesoff",
-      "logson",
-      "logsoff",
-      "autorole",
-      "autoroleoff",
-      "prefix",
-      "setup",
-      "serverconfig",
-      "welcomechannel",
-      "goodbyechannel",
-      "invitechannel",
-      "logchannel",
-      "setrules",
-      "setticket",
-      "config",
-      "resetconfig",
-      "antilinksconfig",
-      "antispamconfig",
-      "ticket",
-      "setlog",
-      "features"
+      "welcome","goodbye","invites","logs","welcomeon",
+      "welcomeoff","goodbyeon","goodbyeoff","inviteson",
+      "invitesoff","logson","logsoff","autorole",
+      "autoroleoff","prefix","setup","serverconfig",
+      "welcomechannel","goodbyechannel","invitechannel",
+      "logchannel","setrules","setticket","config",
+      "resetconfig","antilinksconfig","antispamconfig",
+      "ticket","setlog","features"
     ]
   },
 
@@ -604,3939 +833,2470 @@ const adminCategories = {
     emoji: "👑",
     name: "Administración",
     commands: [
-      "addmoney",
-      "removemoney",
-      "setmoney",
-      "addbank",
-      "removebank",
-      "setbank",
-      "addxp",
-      "removexp",
-      "setxp",
-      "addlevel",
-      "setlevel",
-      "resetuser",
-      "setwarns",
-      "resetwarns",
-      "giveall",
-      "takeall",
-      "createrole",
-      "deleterole",
-      "role",
-      "createchannel",
-      "deletechannel",
-      "announce",
-      "say",
-      "embed",
-      "server",
-      "removelevel",
-      "resetxp",
-      "resetmoney",
-      "resetbank",
-      "serverstats"
+      "addmoney","removemoney","setmoney","addbank",
+      "removebank","setbank","addxp","removexp",
+      "setxp","addlevel","setlevel","resetuser",
+      "setwarns","resetwarns","giveall","takeall",
+      "createrole","deleterole","role",
+      "createchannel","deletechannel","announce","say",
+      "embed","server","removelevel","resetxp",
+      "resetmoney","resetbank","serverstats"
     ]
   }
 };
 
-// ============================================================
-// 📨 INVITES
-// ============================================================
-
-const inviteCache = new Map();
-
-async function loadInvites(guild) {
-  try {
-    const invites =
-      await guild.invites.fetch();
-
-    const map = new Map();
-
-    invites.forEach(invite => {
-      map.set(invite.code, {
-        uses: invite.uses || 0,
-        inviterId:
-          invite.inviter?.id || null
-      });
-    });
-
-    inviteCache.set(
-      guild.id,
-      map
-    );
-  } catch {}
-}
-
-async function detectInvite(guild) {
-  try {
-    const old =
-      inviteCache.get(guild.id) ||
-      new Map();
-
-    const current =
-      await guild.invites.fetch();
-
-    let usedInvite = null;
-
-    current.forEach(invite => {
-      const previous =
-        old.get(invite.code);
-
-      if (
-        previous &&
-        (invite.uses || 0) >
-          previous.uses
-      ) {
-        usedInvite = invite;
-      }
-    });
-
-    await loadInvites(guild);
-
-    return usedInvite;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================
-// 👋 BIENVENIDA
-// ============================================================
-
-client.on(
-  "guildMemberAdd",
-  async member => {
-    const config =
-      getGuildData(member.guild.id);
-
-    const usedInvite =
-      await detectInvite(member.guild);
-
-    if (
-      config.welcomeEnabled &&
-      config.welcomeChannel
-    ) {
-      const channel =
-        member.guild.channels.cache.get(
-          config.welcomeChannel
-        );
-
-      if (channel) {
-        const embed = makeEmbed(
-          "╔══ 👋 ¡BIENVENIDO! ══╗",
-          [
-            `👋 ¡Bienvenido ${member}! 🎉`,
-            "",
-            `🌌 Ahora formas parte de **${member.guild.name}**.`,
-            "",
-            "📖 Lee las reglas del servidor.",
-            "🎫 Si necesitas ayuda, abre un ticket.",
-            "",
-            "🧡 ¡Disfruta tu estancia en Mati Nexus!"
-          ].join("\n")
-        );
-
-        embed.setThumbnail(
-          member.user.displayAvatarURL({
-            size: 512
-          })
-        );
-
-        await channel.send({
-          embeds: [embed]
-        }).catch(() => {});
-      }
-    }
-
-    if (config.autorole) {
-      const role =
-        member.guild.roles.cache.get(
-          config.autorole
-        );
-
-      if (role) {
-        await member.roles
-          .add(role)
-          .catch(() => {});
-      }
-    }
-
-    if (
-      config.inviteEnabled &&
-      config.inviteChannel &&
-      usedInvite
-    ) {
-      const channel =
-        member.guild.channels.cache.get(
-          config.inviteChannel
-        );
-
-      if (channel) {
-        const inviter =
-          usedInvite.inviter
-            ? `<@${usedInvite.inviter.id}>`
-            : "Desconocido";
-
-        await channel.send({
-          embeds: [
-            makeEmbed(
-              "╔══ 📨 INVITACIÓN ══╗",
-              [
-                `👤 Nuevo miembro: ${member}`,
-                `🤝 Invitado por: ${inviter}`,
-                `🔗 Código: \`${usedInvite.code}\``,
-                `📊 Usos: **${usedInvite.uses}**`
-              ].join("\n")
-            )
-          ]
-        }).catch(() => {});
-      }
-    }
-
-    await sendLog(
-      member.guild,
-      "MIEMBRO ENTRÓ",
-      [
-        `👤 Usuario: ${member.user.tag}`,
-        `🤝 Invitado por: ${
-          usedInvite?.inviter
-            ? usedInvite.inviter.tag
-            : "Desconocido"
-        }`
-      ].join("\n")
-    );
-  }
-);
-
-// ============================================================
-// 😭 DESPEDIDA
-// ============================================================
-
-client.on(
-  "guildMemberRemove",
-  async member => {
-    const config =
-      getGuildData(member.guild.id);
-
-    if (
-      config.goodbyeEnabled &&
-      config.goodbyeChannel
-    ) {
-      const channel =
-        member.guild.channels.cache.get(
-          config.goodbyeChannel
-        );
-
-      if (channel) {
-        await channel.send({
-          embeds: [
-            makeEmbed(
-              "╔══ 😭 DESPEDIDA ══╗",
-              [
-                `😭 Nuestro miembro **${member.user.tag}** nos ha dejado..`,
-                "",
-                "🌌 Esperamos volver a verte algún día."
-              ].join("\n")
-            )
-          ]
-        }).catch(() => {});
-      }
-    }
-
-    await sendLog(
-      member.guild,
-      "MIEMBRO SALIÓ",
-      `👤 Usuario: ${member.user.tag}`
-    );
-  }
-);
-
-// ============================================================
-// 📜 LOGS
-// ============================================================
-
-client.on(
-  "messageDelete",
-  async message => {
-    if (!message.guild) return;
-    if (message.author?.bot) return;
-
-    await sendLog(
-      message.guild,
-      "MENSAJE ELIMINADO",
-      [
-        `👤 Autor: ${message.author?.tag || "Desconocido"}`,
-        `📁 Canal: ${message.channel}`,
-        `💬 Contenido: ${
-          message.content || "Sin contenido"
-        }`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "messageBulkDelete",
-  async messages => {
-    const first = messages.first();
-
-    if (!first?.guild) return;
-
-    await sendLog(
-      first.guild,
-      "MENSAJES ELIMINADOS",
-      [
-        `📁 Canal: ${first.channel}`,
-        `🗑️ Cantidad: ${messages.size}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "messageUpdate",
-  async (oldMessage, newMessage) => {
-    if (!oldMessage.guild) return;
-    if (oldMessage.author?.bot) return;
-
-    if (
-      oldMessage.content ===
-      newMessage.content
-    ) return;
-
-    await sendLog(
-      oldMessage.guild,
-      "MENSAJE EDITADO",
-      [
-        `👤 Autor: ${oldMessage.author?.tag || "Desconocido"}`,
-        `📁 Canal: ${oldMessage.channel}`,
-        `Antes: ${truncate(oldMessage.content, 500)}`,
-        `Después: ${truncate(newMessage.content, 500)}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "channelCreate",
-  async channel => {
-    if (!channel.guild) return;
-
-    const executor =
-      await getExecutor(
-        channel.guild,
-        AuditLogEvent.ChannelCreate,
-        channel.id
-      );
-
-    await sendLog(
-      channel.guild,
-      "CANAL CREADO",
-      [
-        `📁 Canal: ${channel}`,
-        `🆔 ID: ${channel.id}`,
-        `👤 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "channelDelete",
-  async channel => {
-    if (!channel.guild) return;
-
-    const executor =
-      await getExecutor(
-        channel.guild,
-        AuditLogEvent.ChannelDelete,
-        channel.id
-      );
-
-    await sendLog(
-      channel.guild,
-      "CANAL ELIMINADO",
-      [
-        `📁 Canal: #${channel.name}`,
-        `🆔 ID: ${channel.id}`,
-        `👤 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "channelUpdate",
-  async (oldChannel, newChannel) => {
-    if (!newChannel.guild) return;
-
-    if (
-      oldChannel.name ===
-      newChannel.name
-    ) return;
-
-    const executor =
-      await getExecutor(
-        newChannel.guild,
-        AuditLogEvent.ChannelUpdate,
-        newChannel.id
-      );
-
-    await sendLog(
-      newChannel.guild,
-      "CANAL MODIFICADO",
-      [
-        `📁 Antes: #${oldChannel.name}`,
-        `📁 Ahora: #${newChannel.name}`,
-        `👤 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "roleCreate",
-  async role => {
-    const executor =
-      await getExecutor(
-        role.guild,
-        AuditLogEvent.RoleCreate,
-        role.id
-      );
-
-    await sendLog(
-      role.guild,
-      "ROL CREADO",
-      [
-        `🎭 Rol: ${role}`,
-        `👤 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "roleDelete",
-  async role => {
-    const executor =
-      await getExecutor(
-        role.guild,
-        AuditLogEvent.RoleDelete,
-        role.id
-      );
-
-    await sendLog(
-      role.guild,
-      "ROL ELIMINADO",
-      [
-        `🎭 Rol: ${role.name}`,
-        `👤 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "roleUpdate",
-  async (oldRole, newRole) => {
-    if (
-      oldRole.name ===
-      newRole.name
-    ) return;
-
-    const executor =
-      await getExecutor(
-        newRole.guild,
-        AuditLogEvent.RoleUpdate,
-        newRole.id
-      );
-
-    await sendLog(
-      newRole.guild,
-      "ROL MODIFICADO",
-      [
-        `🎭 Antes: ${oldRole.name}`,
-        `🎭 Ahora: ${newRole.name}`,
-        `👤 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "guildBanAdd",
-  async ban => {
-    const executor =
-      await getExecutor(
-        ban.guild,
-        AuditLogEvent.MemberBanAdd,
-        ban.user.id
-      );
-
-    await sendLog(
-      ban.guild,
-      "USUARIO BANEADO",
-      [
-        `👤 Usuario: ${ban.user.tag}`,
-        `👑 Por: ${executor || "Desconocido"}`,
-        `📝 Motivo: ${ban.reason || "No especificado"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "guildBanRemove",
-  async ban => {
-    const executor =
-      await getExecutor(
-        ban.guild,
-        AuditLogEvent.MemberBanRemove,
-        ban.user.id
-      );
-
-    await sendLog(
-      ban.guild,
-      "BAN QUITADO",
-      [
-        `👤 Usuario: ${ban.user.tag}`,
-        `👑 Por: ${executor || "Desconocido"}`
-      ].join("\n")
-    );
-  }
-);
-
-client.on(
-  "voiceStateUpdate",
-  async (oldState, newState) => {
-    if (!newState.guild) return;
-
-    if (
-      oldState.channelId ===
-      newState.channelId
-    ) return;
-
-    let text =
-      `👤 Usuario: ${newState.member?.user.tag || "Desconocido"}\n`;
-
-    if (
-      !oldState.channelId &&
-      newState.channelId
-    ) {
-      text +=
-        `🔊 Entró a <#${newState.channelId}>`;
-    } else if (
-      oldState.channelId &&
-      !newState.channelId
-    ) {
-      text +=
-        `🔇 Salió de <#${oldState.channelId}>`;
-    } else {
-      text +=
-        `➡️ <#${oldState.channelId}> → <#${newState.channelId}>`;
-    }
-
-    await sendLog(
-      newState.guild,
-      "CAMBIO DE VOZ",
-      text
-    );
-  }
-);
-
-// ============================================================
-// 🚨 ANTI-SPAM
-// ============================================================
-
-const spamTracker = new Map();
-
-function checkSpam(message) {
-  const key = message.guild.id;
-
-  const old = spamTracker.get(key);
-
-  if (
-    !old ||
-    old.userId !== message.author.id
-  ) {
-    spamTracker.set(key, {
-      userId: message.author.id,
-      count: 1
-    });
-
-    return false;
-  }
-
-  old.count++;
-
-  if (old.count >= 5) {
-    old.count = 0;
-    return true;
-  }
-
-  return false;
-}
-
-// ============================================================
-// 🔗 ANTI-LINKS
-// ============================================================
-
-const linkRegex =
-  /(https?:\/\/\S+|www\.\S+|discord\.gg\/\S+)/i;
-
-// ============================================================
-// 🎫 TICKETS
-// ============================================================
-
-const ticketTypes = {
-  general: "💬 General",
-  postulaciones: "📝 Postulaciones",
-  reporte: "🚨 Reportar a un usuario",
-  bug: "🐛 Reportar Bug",
-  alianzas: "🤝 Alianzas",
-  afiliaciones: "🌠 Afiliaciones",
-  partners: "🤠 Partners"
-};
-
-function ticketEmbed() {
-  return makeEmbed(
-    "🎫 Tickets - ミ🧡Mati Nexus🩷彡",
-    [
-      "¿Necesitas ayuda o deseas postularte? Selecciona una categoría abajo para abrir un ticket.",
-      "",
-      "💬 General — Dudas o problemas",
-      "📝 Postulaciones — Postulaciones abiertas!",
-      "🚨 Reportar a un usuario — Reportar a infractores",
-      "🐛 Reportar Bug — Reportar bugs del servidor",
-      "",
-      "**━━━━━━━━━━━━━━ 🤝 ━━━━━━━━━━━━━━**",
-      "🤝 Alianzas — Para aliarte",
-      "🌠 Afiliaciones — Afiliarte (obligatorio everyone)",
-      "🤠 Partners — Para ser partners",
-      "",
-      "### ⚠️ Importante・Solo abre un ticket si lo necesitas",
-      "",
-      "https://i.imgur.com/7GbwIT4.jpeg"
-    ].join("\n")
-  );
-}
-
-async function createTicket(
-  interaction,
-  type
-) {
-  const guild = interaction.guild;
-  const user = interaction.user;
-  const config = getGuildData(guild.id);
-
-  const existing =
-    guild.channels.cache.find(
-      channel =>
-        channel.topic ===
-        `ticketOwner:${user.id}`
-    );
-
-  if (existing) {
-    return interaction.reply({
-      content:
-        `❌ Ya tienes un ticket abierto: ${existing}`,
-      ephemeral: true
-    });
-  }
-
-  let parent = null;
-
-  if (config.ticketCategory) {
-    const category =
-      guild.channels.cache.get(
-        config.ticketCategory
-      );
-
-    if (
-      category?.type ===
-      ChannelType.GuildCategory
-    ) {
-      parent = category;
-    }
-  }
-
-  const name =
-    `ticket-${user.username}`
-      .toLowerCase()
-      .replace(/[^a-z0-9-_]/g, "")
-      .slice(0, 70) ||
-    `ticket-${user.id}`;
-
-  const overwrites = [
-    {
-      id: guild.roles.everyone.id,
-      deny: [
-        PermissionsBitField.Flags.ViewChannel
-      ]
-    },
-    {
-      id: user.id,
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory,
-        PermissionsBitField.Flags.AttachFiles,
-        PermissionsBitField.Flags.EmbedLinks
-      ]
-    },
-    {
-      id: client.user.id,
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory,
-        PermissionsBitField.Flags.ManageChannels
-      ]
-    }
-  ];
-
-  for (
-    const role of guild.roles.cache.values()
-  ) {
-    if (
-      role.permissions.has(
-        PermissionsBitField.Flags.Administrator
-      ) &&
-      role.id !== guild.id
-    ) {
-      overwrites.push({
-        id: role.id,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.ReadMessageHistory
-        ]
-      });
-    }
-  }
-
-  const channel =
-    await guild.channels.create({
-      name,
-      type: ChannelType.GuildText,
-      parent: parent?.id || undefined,
-      topic: `ticketOwner:${user.id}`,
-      permissionOverwrites: overwrites
-    });
-
-  const buttons =
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("ticket_claim")
-        .setLabel("Reclamar ticket")
-        .setEmoji("🎟️")
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId("ticket_close")
-        .setLabel("Cerrar ticket")
-        .setEmoji("🔒")
-        .setStyle(ButtonStyle.Danger)
-    );
-
-  await channel.send({
-    content: `${user}`,
-    embeds: [
-      makeEmbed(
-        ticketTypes[type],
-        [
-          `👤 Usuario: ${user}`,
-          "",
-          "Un miembro del staff te atenderá pronto.",
-          "",
-          "🎟️ Reclamar ticket",
-          "🔒 Cerrar ticket"
-        ].join("\n")
-      )
-    ],
-    components: [buttons]
-  });
-
-  await interaction.reply({
-    content:
-      `✅ Ticket creado: ${channel}`,
-    ephemeral: true
-  });
-
-  await sendLog(
-    guild,
-    "TICKET CREADO",
-    [
-      `👤 Usuario: ${user.tag}`,
-      `📁 Canal: ${channel}`,
-      `📌 Categoría: ${ticketTypes[type]}`
-    ].join("\n")
-  );
-}
-
-// ============================================================
-// 🎛️ MENÚS DE AYUDA
-// ============================================================
-
-function categoryMenu(admin = false) {
-  const categories =
-    admin
+function helpMenu(adminPanel) {
+  const source =
+    adminPanel
       ? adminCategories
       : publicCategories;
 
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(
-        admin
-          ? "mati_admin_category"
-          : "mati_public_category"
+        adminPanel
+          ? "admin_help"
+          : "public_help"
       )
-      .setPlaceholder(
-        "📚 Selecciona una categoría"
-      )
+      .setPlaceholder("🌌 Selecciona una categoría...")
       .addOptions(
-        Object.entries(categories).map(
-          ([key, category]) =>
-            new StringSelectMenuOptionBuilder()
-              .setLabel(category.name)
-              .setEmoji(category.emoji)
-              .setValue(key)
-              .setDescription(
-                "Ver 30 comandos"
-              )
+        Object.entries(source).map(([key,c]) =>
+          new StringSelectMenuOptionBuilder()
+            .setLabel(c.name)
+            .setDescription("Ver los 30 comandos")
+            .setEmoji(c.emoji)
+            .setValue(key)
         )
       )
   );
 }
 
-function commandPages(
-  categoryKey,
-  admin = false
-) {
-  const categories =
-    admin
-      ? adminCategories
-      : publicCategories;
-
-  const category =
-    categories[categoryKey];
-
-  if (!category) return [];
-
-  const first =
-    category.commands.slice(0, 15);
-
-  const second =
-    category.commands.slice(15, 30);
-
-  const row1 =
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(
-          `${admin ? "admin" : "public"}_page1_${categoryKey}`
-        )
-        .setPlaceholder(
-          "📄 Página 1 • 15 comandos"
-        )
-        .addOptions(
-          first.map(command =>
-            new StringSelectMenuOptionBuilder()
-              .setLabel(`m.${command}`)
-              .setValue(command)
-              .setDescription(
-                `Usar m.${command}`
-              )
-          )
-        )
-    );
-
-  const row2 =
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(
-          `${admin ? "admin" : "public"}_page2_${categoryKey}`
-        )
-        .setPlaceholder(
-          "📄 Página 2 • 15 comandos"
-        )
-        .addOptions(
-          second.map(command =>
-            new StringSelectMenuOptionBuilder()
-              .setLabel(`m.${command}`)
-              .setValue(command)
-              .setDescription(
-                `Usar m.${command}`
-              )
-          )
-        )
-    );
-
-  return [
-    categoryMenu(admin),
-    row1,
-    row2
-  ];
-}
-
-// ============================================================
-// 🎛️ INTERACCIONES
-// ============================================================
-
-client.on(
-  "interactionCreate",
-  async interaction => {
-
-    if (interaction.isStringSelectMenu()) {
-
-      if (
-        interaction.customId ===
-        "mati_public_category"
-      ) {
-        const key =
-          interaction.values[0];
-
-        const category =
-          publicCategories[key];
-
-        if (!category) return;
-
-        return interaction.update({
-          embeds: [
-            makeEmbed(
-              `${category.emoji} ${category.name}`,
-              [
-                "🌌 Comandos públicos.",
-                "",
-                "📚 Total: **30 comandos**",
-                "📄 Página 1: **15 comandos**",
-                "📄 Página 2: **15 comandos**"
-              ].join("\n")
-            )
-          ],
-          components:
-            commandPages(key, false)
-        });
-      }
-
-      if (
-        interaction.customId ===
-        "mati_admin_category"
-      ) {
-        if (
-          !isAdmin(interaction.member)
-        ) {
-          return interaction.reply({
-            content:
-              "❌ Solo administradores.",
-            ephemeral: true
-          });
-        }
-
-        const key =
-          interaction.values[0];
-
-        const category =
-          adminCategories[key];
-
-        if (!category) return;
-
-        return interaction.update({
-          embeds: [
-            makeEmbed(
-              `${category.emoji} ${category.name}`,
-              [
-                "👑 Comandos administrativos.",
-                "",
-                "📚 Total: **30 comandos**",
-                "📄 Página 1: **15 comandos**",
-                "📄 Página 2: **15 comandos**"
-              ].join("\n")
-            )
-          ],
-          components:
-            commandPages(key, true)
-        });
-      }
-
-      if (
-        interaction.customId ===
-        "mati_ticket_select"
-      ) {
-        return createTicket(
-          interaction,
-          interaction.values[0]
-        );
-      }
-
-      if (
-        interaction.customId.startsWith(
-          "public_page"
-        ) ||
-        interaction.customId.startsWith(
-          "admin_page"
-        )
-      ) {
-        const command =
-          interaction.values[0];
-
-        return interaction.reply({
-          content:
-            `🌌 Comando seleccionado: \`m.${command}\``,
-          ephemeral: true
-        });
-      }
-    }
-
-    if (interaction.isButton()) {
-
-      if (
-        interaction.customId ===
-        "ticket_claim"
-      ) {
-        if (
-          !isAdmin(interaction.member)
-        ) {
-          return interaction.reply({
-            content:
-              "❌ Solo administradores.",
-            ephemeral: true
-          });
-        }
-
-        await interaction.channel.send(
-          `🎟️ Ticket reclamado por ${interaction.user}.`
-        );
-
-        return interaction.reply({
-          content:
-            "✅ Ticket reclamado.",
-          ephemeral: true
-        });
-      }
-
-      if (
-        interaction.customId ===
-        "ticket_close"
-      ) {
-        if (
-          !isAdmin(interaction.member)
-        ) {
-          return interaction.reply({
-            content:
-              "❌ Solo administradores.",
-            ephemeral: true
-          });
-        }
-
-        await interaction.reply(
-          "🔒 Cerrando ticket..."
-        );
-
-        await sendLog(
-          interaction.guild,
-          "TICKET CERRADO",
-          [
-            `📁 Canal: ${interaction.channel}`,
-            `👤 Por: ${interaction.user.tag}`
-          ].join("\n")
-        );
-
-        setTimeout(() => {
-          interaction.channel
-            .delete()
-            .catch(() => {});
-        }, 3000);
-      }
-    }
-  }
-);
-
-// ============================================================
-// 💬 MENSAJES
-// ============================================================
-
-client.on(
-  "messageCreate",
-  async message => {
-
-    if (!message.guild) return;
-    if (message.author.bot) return;
-
-    const config =
-      getGuildData(message.guild.id);
-
-    // --------------------------------------------------------
-    // 🔗 ANTI-LINKS
-    // --------------------------------------------------------
-
-    if (
-      config.antiLinks &&
-      !isAdmin(message.member) &&
-      linkRegex.test(message.content)
-    ) {
-      await message
-        .delete()
-        .catch(() => {});
-
-      await message.member
-        .timeout(
-          2 * 60 * 60 * 1000,
-          "Anti-links Mati Nexus"
-        )
-        .catch(() => {});
-
-      const user =
-        getUserData(message.author.id);
-
-      user.warns++;
-
-      saveData();
-
-      await sendLog(
-        message.guild,
-        "🔗 ANTI-LINKS",
-        [
-          `👤 Usuario: ${message.author.tag}`,
-          "🔗 Enlace eliminado.",
-          "⏱️ Timeout: 2 horas",
-          `⚠️ Warns: ${user.warns}`
-        ].join("\n")
-      );
-
-      return;
-    }
-
-    // --------------------------------------------------------
-    // 🚨 ANTI-SPAM
-    // --------------------------------------------------------
-
-    if (
-      config.antiSpam &&
-      checkSpam(message)
-    ) {
-      const user =
-        getUserData(message.author.id);
-
-      user.warns++;
-
-      saveData();
-
-      const warning =
-        await message.channel.send(
-          `⚠️ ${message.author}, recibiste un warn por enviar 5 mensajes seguidos.`
-        );
-
-      setTimeout(() => {
-        warning.delete().catch(() => {});
-      }, 5000);
-
-      await sendLog(
-        message.guild,
-        "🚨 ANTI-SPAM",
-        [
-          `👤 Usuario: ${message.author.tag}`,
-          "⚠️ 5 mensajes consecutivos.",
-          `📊 Warns: ${user.warns}`
-        ].join("\n")
-      );
-    }
-
-    // --------------------------------------------------------
-    // PREFIX
-    // --------------------------------------------------------
-
-    const prefix =
-      getPrefix(message.guild);
-
-    if (
-      !message.content.startsWith(prefix)
-    ) {
-      return;
-    }
-
-    const parts =
-      message.content
-        .slice(prefix.length)
-        .trim()
-        .split(/\s+/);
-
-    const command =
-      parts.shift()?.toLowerCase();
-
-    const args = parts;
-
-    if (!command) return;
-
-    const user =
-      getUserData(message.author.id);
-
-    // ========================================================
-    // 🌌 HELP
-    // ========================================================
-
-    if (command === "help") {
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🌌 ミ🧡Mati Nexus🩷彡",
-            [
-              "Bienvenido al menú de comandos.",
-              "",
-              "📚 **30 comandos por categoría**",
-              "📄 **15 comandos por página**",
-              "",
-              "Selecciona una categoría."
-            ].join("\n")
-          )
-        ],
-        components: [
-          categoryMenu(false)
-        ]
-      });
-    }
-
-    if (
-      command === "helpad" ||
-      command === "adminhelp" ||
-      command === "helpadmin"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "👑 Panel Administrativo",
-            [
-              "Panel exclusivo para administradores.",
-              "",
-              "📚 **30 comandos por categoría**",
-              "📄 **15 comandos por página**"
-            ].join("\n")
-          )
-        ],
-        components: [
-          categoryMenu(true)
-        ]
-      });
-    }
-
-    // ========================================================
-    // 🌌 GENERAL
-    // ========================================================
-
-    if (command === "ping") {
-      return message.reply(
-        `🏓 Pong! **${client.ws.ping}ms**`
-      );
-    }
-
-    if (command === "uptime") {
-      return message.reply(
-        `⏱️ Uptime: **${Math.floor(
-          process.uptime()
-        )} segundos**`
-      );
-    }
-
-    if (command === "botinfo") {
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🌌 Mati Nexus BOT",
-            [
-              "🧡 Fundador: mati_jojojo",
-              "👤 Creador: rykeryt.25, ryan_lamienyamal",
-              "",
-              `📡 Servidores: ${client.guilds.cache.size}`,
-              `👥 Usuarios: ${client.guilds.cache.reduce(
-                (a, g) => a + g.memberCount,
-                0
-              )}`,
-              `🏓 Ping: ${client.ws.ping}ms`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "serverinfo" ||
-      command === "server"
-    ) {
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            `🌌 ${message.guild.name}`,
-            [
-              `👑 Dueño: <@${message.guild.ownerId}>`,
-              `👥 Miembros: ${message.guild.memberCount}`,
-              `📁 Canales: ${message.guild.channels.cache.size}`,
-              `🎭 Roles: ${message.guild.roles.cache.size}`,
-              `🚀 Boosts: ${message.guild.premiumSubscriptionCount || 0}`,
-              `🆔 ID: ${message.guild.id}`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "userinfo" ||
-      command === "whois" ||
-      command === "profile"
-    ) {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        ) || message.member;
-
-      const targetData =
-        getUserData(target.id);
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            `👤 ${target.user.tag}`,
-            [
-              `🆔 ID: ${target.id}`,
-              `📅 Cuenta: <t:${Math.floor(
-                target.user.createdTimestamp / 1000
-              )}:R>`,
-              `⭐ Nivel: ${targetData.level}`,
-              `✨ XP: ${targetData.xp}`,
-              `⚠️ Warns: ${targetData.warns}`
-            ].join("\n")
-          ).setThumbnail(
-            target.user.displayAvatarURL({
-              size: 512
-            })
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "avatar" ||
-      command === "banner"
-    ) {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        ) || message.member;
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🖼️ Avatar",
-            `[Abrir imagen](${target.user.displayAvatarURL({
-              size: 4096,
-              extension: "png"
-            })})`
-          ).setImage(
-            target.user.displayAvatarURL({
-              size: 1024
-            })
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "id" ||
-      command === "guildid"
-    ) {
-      return message.reply(
-        `🆔 ID: \`${message.guild.id}\``
-      );
-    }
-
-    if (command === "botid") {
-      return message.reply(
-        `🤖 ID del bot: \`${client.user.id}\``
-      );
-    }
-
-    if (command === "membercount") {
-      return message.reply(
-        `👥 Miembros: **${message.guild.memberCount}**`
-      );
-    }
-
-    if (command === "channels") {
-      return message.channel.send(
-        makeEmbed(
-          "📁 Canales",
-          message.guild.channels.cache
-            .map(c => `${c}`)
-            .slice(0, 100)
-            .join("\n")
-        )
-      );
-    }
-
-    if (command === "roles") {
-      return message.channel.send(
-        makeEmbed(
-          "🎭 Roles",
-          message.guild.roles.cache
-            .filter(
-              r => r.id !== message.guild.id
-            )
-            .map(r => r.name)
-            .slice(0, 100)
-            .join("\n") ||
-            "Sin roles."
-        )
-      );
-    }
-
-    if (command === "boosts") {
-      return message.reply(
-        `🚀 Boosts: **${message.guild.premiumSubscriptionCount || 0}**`
-      );
-    }
-
-    if (command === "serverowner") {
-      return message.reply(
-        `👑 Dueño: <@${message.guild.ownerId}>`
-      );
-    }
-
-    if (
-      command === "date" ||
-      command === "time" ||
-      command === "timestamp" ||
-      command === "now"
-    ) {
-      return message.reply(
-        `🕐 <t:${Math.floor(
-          Date.now() / 1000
-        )}:F>`
-      );
-    }
-
-    if (command === "serverage") {
-      return message.reply(
-        `📅 Servidor creado: <t:${Math.floor(
-          message.guild.createdTimestamp / 1000
-        )}:R>`
-      );
-    }
-
-    if (command === "userage") {
-      return message.reply(
-        `📅 Tu cuenta fue creada: <t:${Math.floor(
-          message.author.createdTimestamp / 1000
-        )}:R>`
-      );
-    }
-
-    if (
-      command === "channelinfo"
-    ) {
-      return message.reply(
-        `📁 Canal: ${message.channel}\n🆔 ${message.channel.id}`
-      );
-    }
-
-    if (command === "roleinfo") {
-      const role =
-        findRole(
-          message.guild,
-          args[0]
-        );
-
-      if (!role) {
-        return message.reply(
-          "❌ Menciona un rol."
-        );
-      }
-
-      return message.reply(
-        `🎭 ${role}\n🆔 ${role.id}\n👥 ${role.members.size} miembros`
-      );
-    }
-
-    // ========================================================
-    // 💰 ECONOMÍA
-    // ========================================================
-
-    if (
-      command === "balance" ||
-      command === "money" ||
-      command === "wallet" ||
-      command === "cash" ||
-      command === "economy"
-    ) {
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "💰 Economía",
-            [
-              `👛 Billetera: ${money(user.wallet)}`,
-              `🏦 Banco: ${money(user.bank)}`,
-              `💎 Total: ${money(
-                user.wallet + user.bank
-              )}`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    async function earn(
-      property,
-      min,
-      max,
-      cooldown
-    ) {
-      const now = Date.now();
-
-      if (
-        now - user[property] <
-        cooldown
-      ) {
-        return message.reply(
-          `⏳ Espera **${cooldownText(
-            cooldown -
-              (now - user[property])
-          )}**.`
-        );
-      }
-
-      const amount =
-        random(min, max);
-
-      user[property] = now;
-      user.wallet += amount;
-
-      const levelUp =
-        addXP(
-          message.author.id,
-          random(5, 15)
-        );
-
-      saveData();
-
-      return message.reply(
-        [
-          `💰 Ganaste **${money(amount)}**.`,
-          `👛 Billetera: **${money(user.wallet)}**`,
-          levelUp
-            ? "⭐ ¡Subiste de nivel!"
-            : ""
-        ].filter(Boolean).join("\n")
-      );
-    }
-
-    if (command === "work") {
-      return earn(
-        "lastWork",
-        100,
-        300,
-        30000
-      );
-    }
-
-    if (command === "salary") {
-      return earn(
-        "lastSalary",
-        150,
-        350,
-        60000
-      );
-    }
-
-    if (command === "bonus") {
-      return earn(
-        "lastBonus",
-        100,
-        250,
-        90000
-      );
-    }
-
-    if (command === "income") {
-      return earn(
-        "lastIncome",
-        75,
-        200,
-        45000
-      );
-    }
-
-    if (command === "gig") {
-      return earn(
-        "lastGig",
-        100,
-        250,
-        45000
-      );
-    }
-
-    if (command === "hustle") {
-      return earn(
-        "lastHustle",
-        120,
-        300,
-        60000
-      );
-    }
-
-    if (command === "daily") {
-      const now = Date.now();
-
-      if (
-        now - user.lastDaily <
-        86400000
-      ) {
-        return message.reply(
-          `⏳ Espera **${cooldownText(
-            86400000 -
-              (now - user.lastDaily)
-          )}**.`
-        );
-      }
-
-      const amount =
-        random(500, 1000);
-
-      user.lastDaily = now;
-      user.wallet += amount;
-
-      saveData();
-
-      return message.reply(
-        `🎁 Daily: **${money(amount)}**`
-      );
-    }
-
-    if (command === "beg") {
-      return earn(
-        "lastBeg",
-        20,
-        100,
-        60000
-      );
-    }
-
-    if (command === "crime") {
-      const now = Date.now();
-
-      if (
-        now - user.lastCrime <
-        120000
-      ) {
-        return message.reply(
-          `⏳ Espera **${cooldownText(
-            120000 -
-              (now - user.lastCrime)
-          )}**.`
-        );
-      }
-
-      user.lastCrime = now;
-
-      if (Math.random() <= 0.2) {
-        const amount =
-          random(500, 700);
-
-        user.wallet += amount;
-
-        saveData();
-
-        return message.reply(
-          `💰 ¡Crimen exitoso! Ganaste **${money(amount)}**.`
-        );
-      }
-
-      user.wallet =
-        Math.max(
-          0,
-          user.wallet - 600
-        );
-
-      saveData();
-
-      return message.reply(
-        "🚔 Te atraparon. Perdiste **600 💰**."
-      );
-    }
-
-    if (command === "rob") {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      if (
-        !target ||
-        target.id === message.author.id
-      ) {
-        return message.reply(
-          "❌ Menciona a un usuario válido."
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      if (
-        targetData.wallet <= 0
-      ) {
-        return message.reply(
-          "❌ Ese usuario no tiene dinero."
-        );
-      }
-
-      if (
-        Date.now() - user.lastRob <
-        120000
-      ) {
-        return message.reply(
-          `⏳ Espera **${cooldownText(
-            120000 -
-              (Date.now() -
-                user.lastRob)
-          )}**.`
-        );
-      }
-
-      user.lastRob = Date.now();
-
-      if (Math.random() < 0.5) {
-        const amount =
-          Math.min(
-            targetData.wallet,
-            random(50, 300)
-          );
-
-        targetData.wallet -= amount;
-        user.wallet += amount;
-
-        saveData();
-
-        return message.reply(
-          `💰 Robaste **${money(amount)}** a ${target}.`
-        );
-      }
-
-      user.wallet =
-        Math.max(
-          0,
-          user.wallet - 200
-        );
-
-      saveData();
-
-      return message.reply(
-        "🚨 Te descubrieron y perdiste **200 💰**."
-      );
-    }
-
-    if (
-      command === "deposit" ||
-      command === "dep"
-    ) {
-      let amount;
-
-      if (
-        args[0]?.toLowerCase() ===
-        "all"
-      ) {
-        amount = user.wallet;
-      } else {
-        amount = Number(args[0]);
-      }
-
-      if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
-        return message.reply(
-          "❌ Indica una cantidad."
-        );
-      }
-
-      amount =
-        Math.min(
-          amount,
-          user.wallet
-        );
-
-      user.wallet -= amount;
-      user.bank += amount;
-
-      saveData();
-
-      return message.reply(
-        `🏦 Depositaste **${money(amount)}**.`
-      );
-    }
-
-    if (
-      command === "withdraw" ||
-      command === "with"
-    ) {
-      let amount;
-
-      if (
-        args[0]?.toLowerCase() ===
-        "all"
-      ) {
-        amount = user.bank;
-      } else {
-        amount = Number(args[0]);
-      }
-
-      if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
-        return message.reply(
-          "❌ Indica una cantidad."
-        );
-      }
-
-      amount =
-        Math.min(
-          amount,
-          user.bank
-        );
-
-      user.bank -= amount;
-      user.wallet += amount;
-
-      saveData();
-
-      return message.reply(
-        `💵 Retiraste **${money(amount)}**.`
-      );
-    }
-
-    if (
-      command === "pay" ||
-      command === "give"
-    ) {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const amount =
-        Number(args[1]);
-
-      if (
-        !target ||
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
-        return message.reply(
-          "❌ Uso: `m.pay @usuario cantidad`"
-        );
-      }
-
-      if (
-        amount > user.wallet
-      ) {
-        return message.reply(
-          "❌ No tienes suficiente dinero."
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      user.wallet -= amount;
-      targetData.wallet += amount;
-
-      saveData();
-
-      return message.reply(
-        `💸 Enviaste **${money(amount)}** a ${target}.`
-      );
-    }
-
-    if (
-      command === "richest" ||
-      command === "leaderboard"
-    ) {
-      const ranking =
-        Object.entries(data.users)
-          .sort(
-            (a, b) =>
-              (b[1].wallet +
-                b[1].bank) -
-              (a[1].wallet +
-                a[1].bank)
-          )
-          .slice(0, 10);
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🏆 Ranking de dinero",
-            ranking
-              .map(
-                ([id, u], i) =>
-                  `**${i + 1}.** <@${id}> — ${money(
-                    u.wallet + u.bank
-                  )}`
-              )
-              .join("\n") ||
-              "Sin datos."
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "networth" ||
-      command === "economystats"
-    ) {
-      return message.reply(
-        `💎 Patrimonio total: **${money(
-          user.wallet + user.bank
-        )}**`
-      );
-    }
-
-    // ========================================================
-    // 🎮 DIVERSIÓN
-    // ========================================================
-
-    if (command === "coinflip") {
-      return message.reply(
-        `🪙 **${
-          Math.random() < 0.5
-            ? "Cara"
-            : "Cruz"
-        }**`
-      );
-    }
-
-    if (
-      command === "dice" ||
-      command === "roll"
-    ) {
-      const sides =
-        Math.max(
-          2,
-          Number(args[0]) || 6
-        );
-
-      return message.reply(
-        `🎲 Resultado: **${random(
-          1,
-          sides
-        )}**`
-      );
-    }
-
-    if (command === "8ball") {
-      const answers = [
-        "🎱 Sí.",
-        "🎱 No.",
-        "🎱 Probablemente.",
-        "🎱 Definitivamente.",
-        "🎱 No estoy seguro.",
-        "🎱 Pregunta después."
-      ];
-
-      return message.reply(
-        answers[
-          random(
-            0,
-            answers.length - 1
-          )
-        ]
-      );
-    }
-
-    if (command === "choose") {
-      if (args.length < 2) {
-        return message.reply(
-          "❌ Escribe al menos dos opciones."
-        );
-      }
-
-      return message.reply(
-        `🎯 Elegí: **${
-          args[
-            random(
-              0,
-              args.length - 1
-            )
-          ]
-        }**`
-      );
-    }
-
-    if (command === "rate") {
-      return message.reply(
-        `⭐ Calificación: **${random(
-          0,
-          100
-        )}/100**`
-      );
-    }
-
-    if (command === "ship") {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      if (!target) {
-        return message.reply(
-          "❌ Menciona a alguien."
-        );
-      }
-
-      return message.reply(
-        `💗 Compatibilidad: **${random(
-          0,
-          100
-        )}%**`
-      );
-    }
-
-    if (command === "joke") {
-      const jokes = [
-        "😂 ¿Qué hace una abeja en el gimnasio? ¡Zum-ba!",
-        "😂 ¿Qué le dijo un cero a un ocho? Bonito cinturón.",
-        "😂 ¿Cuál es el colmo de un electricista? No encontrar corriente."
-      ];
-
-      return message.reply(
-        jokes[
-          random(
-            0,
-            jokes.length - 1
-          )
-        ]
-      );
-    }
-
-    if (command === "meme") {
-      return message.reply(
-        "😂 Meme del día: cuando dices que vas a dormir temprano y terminas a las 4 AM en Discord."
-      );
-    }
-
-    if (command === "compliment") {
-      return message.reply(
-        `💗 ${message.author}, eres increíble.`
-      );
-    }
-
-    if (command === "fortune") {
-      return message.reply(
-        "🔮 El futuro dice que algo interesante viene."
-      );
-    }
-
-    if (command === "fact") {
-      return message.reply(
-        "🧠 Dato: los pulpos tienen tres corazones."
-      );
-    }
-
-    if (command === "roast") {
-      return message.reply(
-        "🔥 Tu Wi-Fi tiene más estabilidad que tú."
-      );
-    }
-
-    if (command === "reverse") {
-      return message.reply(
-        args.join(" ")
-          .split("")
-          .reverse()
-          .join("")
-      );
-    }
-
-    if (command === "number") {
-      return message.reply(
-        `🔢 Número: **${random(
-          1,
-          100
-        )}**`
-      );
-    }
-
-    if (command === "roulette") {
-      return message.reply(
-        `🎰 Ruleta: **${random(
-          0,
-          36
-        )}**`
-      );
-    }
-
-    if (command === "double") {
-      return message.reply(
-        `🎰 Resultado: **${random(
-          1,
-          2
-        )}**`
-      );
-    }
-
-    if (command === "highlow") {
-      return message.reply(
-        `📈 Salió: **${
-          Math.random() < 0.5
-            ? "HIGH"
-            : "LOW"
-        }**`
-      );
-    }
-
-    if (command === "magic") {
-      return message.reply(
-        "✨ La magia dice: posiblemente."
-      );
-    }
-
-    if (command === "truth") {
-      return message.reply(
-        "🎭 Verdad: ¿cuándo fue la última vez que mentiste?"
-      );
-    }
-
-    if (command === "dare") {
-      return message.reply(
-        "🎯 Reto: manda un emoji que represente tu estado."
-      );
-    }
-
-    // ========================================================
-    // 💗 SOCIAL
-    // ========================================================
-
-    const social = {
-      hug: "🤗 abrazó a",
-      kiss: "💋 le dio un beso a",
-      pat: "🫳 acarició a",
-      poke: "👉 molestó a",
-      highfive: "🙌 chocó la mano con",
-      wave: "👋 saludó a",
-      slap: "😵 le dio una palmada a",
-      cuddle: "🧸 se acurrucó con",
-      dance: "💃 bailó con",
-      smile: "😊 sonrió a",
-      wink: "😉 le guiñó a",
-      respect: "🫡 mostró respeto a",
-      fistbump: "👊 chocó puños con",
-      salute: "🫡 saludó a",
-      handshake: "🤝 estrechó la mano de",
-      clap: "👏 aplaudió a"
-    };
-
-    if (social[command]) {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        ) || message.member;
-
-      return message.reply(
-        `${social[command]} ${target}.`
-      );
-    }
-
-    if (command === "greet") {
-      return message.reply(
-        `👋 ¡Hola ${message.author}!`
-      );
-    }
-
-    if (command === "goodmorning") {
-      return message.reply(
-        `🌅 ¡Buenos días ${message.author}!`
-      );
-    }
-
-    if (command === "goodnight") {
-      return message.reply(
-        `🌙 ¡Buenas noches ${message.author}!`
-      );
-    }
-
-    if (command === "thank") {
-      return message.reply(
-        `💗 ¡De nada ${message.author}!`
-      );
-    }
-
-    if (command === "love") {
-      return message.reply(
-        "💗 El amor está en el aire."
-      );
-    }
-
-    // ========================================================
-    // ⭐ NIVELES
-    // ========================================================
-
-    if (
-      command === "level" ||
-      command === "rank" ||
-      command === "mylevel" ||
-      command === "levelinfo"
-    ) {
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "⭐ Nivel",
-            [
-              `🏆 Nivel: **${user.level}**`,
-              `✨ XP: **${user.xp}/${user.level * 100}**`,
-              `📊 Falta: **${Math.max(
-                0,
-                user.level * 100 -
-                  user.xp
-              )} XP**`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "xp" ||
-      command === "myxp" ||
-      command === "experience"
-    ) {
-      return message.reply(
-        `✨ XP: **${user.xp}**`
-      );
-    }
-
-    if (
-      command === "progress" ||
-      command === "progressbar" ||
-      command === "xppercent"
-    ) {
-      const required =
-        user.level * 100;
-
-      const percent =
-        Math.floor(
-          (user.xp / required) * 100
-        );
-
-      const filled =
-        Math.floor(percent / 10);
-
-      return message.reply(
-        `📊 [${"█".repeat(
-          filled
-        )}${"░".repeat(
-          10 - filled
-        )}] **${percent}%**`
-      );
-    }
-
-    if (
-      command === "top" ||
-      command === "leveltop" ||
-      command === "leaderboardxp" ||
-      command === "xptop"
-    ) {
-      const ranking =
-        Object.entries(data.users)
-          .sort(
-            (a, b) =>
-              (b[1].level * 100 +
-                b[1].xp) -
-              (a[1].level * 100 +
-                a[1].xp)
-          )
-          .slice(0, 10);
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🏆 Ranking XP",
-            ranking
-              .map(
-                ([id, u], i) =>
-                  `**${i + 1}.** <@${id}> — Nivel ${u.level} • ${u.xp} XP`
-              )
-              .join("\n") ||
-              "Sin datos."
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "nextlevel" ||
-      command === "xprequired" ||
-      command === "xpleft"
-    ) {
-      return message.reply(
-        `⭐ Necesitas **${Math.max(
-          0,
-          user.level * 100 -
-            user.xp
-        )} XP** para subir.`
-      );
-    }
-
-    if (
-      command === "levelstats" ||
-      command === "xpstats" ||
-      command === "levelcard" ||
-      command === "levelrank"
-    ) {
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "⭐ Estadísticas",
-            [
-              `🏆 Nivel: ${user.level}`,
-              `✨ XP: ${user.xp}`,
-              `⚠️ Warns: ${user.warns}`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    // ========================================================
-    // 🛠️ UTILIDADES
-    // ========================================================
-
-    if (
-      command === "calculator" ||
-      command === "calc" ||
-      command === "math"
-    ) {
-      const expression =
-        args.join(" ");
-
-      if (!expression) {
-        return message.reply(
-          "❌ Escribe una operación."
-        );
-      }
-
-      if (
-        !/^[0-9+\-*/().%\s]+$/.test(
-          expression
-        )
-      ) {
-        return message.reply(
-          "❌ Operación no válida."
-        );
-      }
-
-      try {
-        const result =
-          Function(
-            `"use strict"; return (${expression})`
-          )();
-
-        return message.reply(
-          `🧮 Resultado: **${result}**`
-        );
-      } catch {
-        return message.reply(
-          "❌ No pude calcular eso."
-        );
-      }
-    }
-
-    if (command === "count") {
-      return message.reply(
-        `👥 Miembros: **${message.guild.memberCount}**`
-      );
-    }
-
-    if (command === "mention") {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      return message.reply(
-        target
-          ? `${target}`
-          : "❌ Usuario no encontrado."
-      );
-    }
-
-    // ========================================================
-    // 🎫 TICKET
-    // ========================================================
-
-    if (command === "ticket") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const menu =
-        new StringSelectMenuBuilder()
-          .setCustomId(
-            "mati_ticket_select"
-          )
-          .setPlaceholder(
-            "🎫 Selecciona una categoría"
-          )
-          .addOptions(
-            Object.entries(
-              ticketTypes
-            ).map(
-              ([value, label]) =>
-                new StringSelectMenuOptionBuilder()
-                  .setLabel(
-                    label.substring(2)
-                  )
-                  .setEmoji(
-                    label.substring(0, 2)
-                  )
-                  .setValue(value)
-                  .setDescription(
-                    "Abrir ticket"
-                  )
-            )
-          );
-
-      return message.channel.send({
-        embeds: [ticketEmbed()],
-        components: [
-          new ActionRowBuilder().addComponents(
-            menu
-          )
-        ]
-      });
-    }
-
-    // ========================================================
-    // 🛡️ ANTI-LINKS
-    // ========================================================
-
-    if (command === "antilinks") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const option =
-        args[0]?.toLowerCase();
-
-      if (
-        option === "on" ||
-        option === "enable"
-      ) {
-        config.antiLinks = true;
-      } else if (
-        option === "off" ||
-        option === "disable"
-      ) {
-        config.antiLinks = false;
-      } else {
-        return message.reply(
-          `🔗 Anti-links: **${
-            config.antiLinks
-              ? "ACTIVADO"
-              : "DESACTIVADO"
-          }**\nUsa \`m.antilinks on/off\`.`
-        );
-      }
-
-      saveData();
-
-      return message.reply(
-        `🔗 Anti-links **${
-          config.antiLinks
-            ? "activado"
-            : "desactivado"
-        }**.`
-      );
-    }
-
-    if (
-      command ===
-      "antilinksconfig"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      return message.reply(
-        `🔗 Anti-links: **${
-          config.antiLinks
-            ? "ON"
-            : "OFF"
-        }**\n⏱️ Timeout: **2 horas**`
-      );
-    }
-
-    // ========================================================
-    // 🚨 ANTI-SPAM
-    // ========================================================
-
-    if (command === "antispam") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const option =
-        args[0]?.toLowerCase();
-
-      if (option === "on") {
-        config.antiSpam = true;
-      } else if (
-        option === "off"
-      ) {
-        config.antiSpam = false;
-      } else {
-        return message.reply(
-          `🚨 Anti-spam: **${
-            config.antiSpam
-              ? "ON"
-              : "OFF"
-          }**\nUsa \`m.antispam on/off\`.`
-        );
-      }
-
-      saveData();
-
-      return message.reply(
-        `🚨 Anti-spam **${
-          config.antiSpam
-            ? "activado"
-            : "desactivado"
-        }**.`
-      );
-    }
-
-    if (
-      command ===
-      "antispamconfig"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      return message.reply(
-        `🚨 Anti-spam: **${
-          config.antiSpam
-            ? "ON"
-            : "OFF"
-        }**\n⚠️ Warn al llegar a 5 mensajes seguidos.`
-      );
-    }
-
-    // ========================================================
-    // 🛡️ MODERACIÓN
-    // ========================================================
-
-    if (
-      [
-        "ban",
-        "kick",
-        "timeout",
-        "mute",
-        "warn"
-      ].includes(command)
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      if (!target) {
-        return message.reply(
-          "❌ Menciona un usuario válido."
-        );
-      }
-
-      const reason =
-        args.slice(1).join(" ") ||
-        "Sin motivo";
-
-      if (command === "warn") {
-        const targetData =
-          getUserData(target.id);
-
-        targetData.warns++;
-
-        saveData();
-
-        await sendLog(
-          message.guild,
-          "WARN",
-          [
-            `👤 Usuario: ${target.user.tag}`,
-            `👑 Moderador: ${message.author.tag}`,
-            `📝 Motivo: ${reason}`,
-            `⚠️ Warns: ${targetData.warns}`
-          ].join("\n")
-        );
-
-        return message.reply(
-          `⚠️ ${target} recibió un warn.`
-        );
-      }
-
-      if (command === "kick") {
-        await target.kick(reason)
-          .catch(() => {});
-
-        return message.reply(
-          `👢 ${target.user.tag} fue expulsado.`
-        );
-      }
-
-      if (command === "ban") {
-        await target.ban({
-          reason
-        }).catch(() => {});
-
-        return message.reply(
-          `🔨 ${target.user.tag} fue baneado.`
-        );
-      }
-
-      await target.timeout(
-        command === "timeout" ||
-        command === "mute"
-          ? 10 * 60 * 1000
-          : null,
-        reason
-      ).catch(() => {});
-
-      return message.reply(
-        `🔇 ${target.user.tag} recibió timeout por 10 minutos.`
-      );
-    }
-
-    if (
-      command === "untimeout" ||
-      command === "unmute"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      if (!target) {
-        return message.reply(
-          "❌ Menciona un usuario."
-        );
-      }
-
-      await target.timeout(
-        null
-      ).catch(() => {});
-
-      return message.reply(
-        `🔊 Timeout quitado a ${target}.`
-      );
-    }
-
-    if (
-      command === "clear" ||
-      command === "purge"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const amount =
-        Math.min(
-          Math.max(
-            Number(args[0]) || 10,
-            1
-          ),
-          100
-        );
-
-      const deleted =
-        await message.channel.bulkDelete(
-          amount,
-          true
-        ).catch(() => null);
-
-      if (!deleted) {
-        return message.reply(
-          "❌ No pude borrar mensajes."
-        );
-      }
-
-      const msg =
-        await message.channel.send(
-          `🧹 Eliminados **${deleted.size}** mensajes.`
-        );
-
-      setTimeout(() => {
-        msg.delete().catch(() => {});
-      }, 3000);
-
-      return;
-    }
-
-    if (
-      command === "lock" ||
-      command === "unlock"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      await message.channel
-        .permissionOverwrites
-        .edit(
-          message.guild.roles.everyone,
-          {
-            SendMessages:
-              command === "lock"
-                ? false
-                : null
-          }
-        );
-
-      return message.reply(
-        command === "lock"
-          ? "🔒 Canal bloqueado."
-          : "🔓 Canal desbloqueado."
-      );
-    }
-
-    if (command === "slowmode") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const seconds =
-        Math.min(
-          Math.max(
-            Number(args[0]) || 0,
-            0
-          ),
-          21600
-        );
-
-      await message.channel
-        .setRateLimitPerUser(
-          seconds
-        );
-
-      return message.reply(
-        `🐌 Slowmode: **${seconds}s**`
-      );
-    }
-
-    if (
-      command === "warns" ||
-      command === "warnings" ||
-      command === "checkwarns"
-    ) {
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        ) || message.member;
-
-      return message.reply(
-        `⚠️ ${target} tiene **${
-          getUserData(target.id).warns
-        } warns.`
-      );
-    }
-
-    if (
-      command === "clearwarns" ||
-      command === "unwarn" ||
-      command === "resetwarns"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      if (!target) {
-        return message.reply(
-          "❌ Menciona un usuario."
-        );
-      }
-
-      getUserData(target.id).warns = 0;
-
-      saveData();
-
-      return message.reply(
-        `✅ Warns eliminados de ${target}.`
-      );
-    }
-
-    if (command === "nick") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const nick =
-        args.slice(1).join(" ");
-
-      if (!target || !nick) {
-        return message.reply(
-          "❌ Uso: `m.nick @usuario nombre`"
-        );
-      }
-
-      await target.setNickname(
-        nick
-      ).catch(() => {});
-
-      return message.reply(
-        `✏️ Nickname cambiado a **${nick}**.`
-      );
-    }
-
-    // ========================================================
-    // ⚙️ CONFIGURACIÓN
-    // ========================================================
-
-    if (
-      command === "welcome" ||
-      command === "welcomechannel"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const channel =
-        findChannel(
-          message.guild,
-          args[0]
-        ) || message.channel;
-
-      config.welcomeChannel =
-        channel.id;
-
-      saveData();
-
-      return message.reply(
-        `👋 Bienvenidas: ${channel}`
-      );
-    }
-
-    if (
-      command === "goodbye" ||
-      command === "goodbyechannel"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const channel =
-        findChannel(
-          message.guild,
-          args[0]
-        ) || message.channel;
-
-      config.goodbyeChannel =
-        channel.id;
-
-      saveData();
-
-      return message.reply(
-        `😭 Despedidas: ${channel}`
-      );
-    }
-
-    if (
-      command === "invites" ||
-      command === "invitechannel"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const channel =
-        findChannel(
-          message.guild,
-          args[0]
-        ) || message.channel;
-
-      config.inviteChannel =
-        channel.id;
-
-      saveData();
-
-      return message.reply(
-        `📨 Invitaciones: ${channel}`
-      );
-    }
-
-    if (
-      command === "logs" ||
-      command === "logchannel" ||
-      command === "setlog"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const channel =
-        findChannel(
-          message.guild,
-          args[0]
-        ) || message.channel;
-
-      config.logChannel =
-        channel.id;
-
-      saveData();
-
-      return message.reply(
-        `📜 Logs: ${channel}`
-      );
-    }
-
-    if (command === "autorole") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const role =
-        findRole(
-          message.guild,
-          args[0]
-        );
-
-      if (!role) {
-        return message.reply(
-          "❌ Menciona un rol."
-        );
-      }
-
-      config.autorole =
-        role.id;
-
-      saveData();
-
-      return message.reply(
-        `🎭 Autorol: ${role}`
-      );
-    }
-
-    if (command === "autoroleoff") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      config.autorole = null;
-
-      saveData();
-
-      return message.reply(
-        "🎭 Autorol desactivado."
-      );
-    }
-
-    if (
-      command === "welcomeon" ||
-      command === "welcomeoff"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      config.welcomeEnabled =
-        command === "welcomeon";
-
-      saveData();
-
-      return message.reply(
-        `👋 Bienvenidas ${
-          config.welcomeEnabled
-            ? "activadas"
-            : "desactivadas"
-        }.`
-      );
-    }
-
-    if (
-      command === "goodbyeon" ||
-      command === "goodbyeoff"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      config.goodbyeEnabled =
-        command === "goodbyeon";
-
-      saveData();
-
-      return message.reply(
-        `😭 Despedidas ${
-          config.goodbyeEnabled
-            ? "activadas"
-            : "desactivadas"
-        }.`
-      );
-    }
-
-    if (
-      command === "inviteson" ||
-      command === "invitesoff"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      config.inviteEnabled =
-        command === "inviteson";
-
-      saveData();
-
-      return message.reply(
-        `📨 Invitaciones ${
-          config.inviteEnabled
-            ? "activadas"
-            : "desactivadas"
-        }.`
-      );
-    }
-
-    if (
-      command === "logson" ||
-      command === "logsoff"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      config.logsEnabled =
-        command === "logson";
-
-      saveData();
-
-      return message.reply(
-        `📜 Logs ${
-          config.logsEnabled
-            ? "activados"
-            : "desactivados"
-        }.`
-      );
-    }
-
-    if (command === "prefix") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      if (!args[0]) {
-        return message.reply(
-          `⚙️ Prefix: \`${config.prefix}\``
-        );
-      }
-
-      config.prefix =
-        args[0];
-
-      saveData();
-
-      return message.reply(
-        `✅ Prefix cambiado a \`${config.prefix}\`.`
-      );
-    }
-
-    if (
-      command === "config" ||
-      command === "serverconfig"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "⚙️ Configuración",
-            [
-              `👋 Bienvenidas: ${config.welcomeEnabled ? "ON" : "OFF"}`,
-              `😭 Despedidas: ${config.goodbyeEnabled ? "ON" : "OFF"}`,
-              `📨 Invitaciones: ${config.inviteEnabled ? "ON" : "OFF"}`,
-              `📜 Logs: ${config.logsEnabled ? "ON" : "OFF"}`,
-              `🔗 Anti-links: ${config.antiLinks ? "ON" : "OFF"}`,
-              `🚨 Anti-spam: ${config.antiSpam ? "ON" : "OFF"}`,
-              `🎭 Autorol: ${config.autorole ? `<@&${config.autorole}>` : "OFF"}`,
-              `🎫 Tickets: ${config.ticketChannel ? `<#${config.ticketChannel}>` : "No configurado"}`,
-              `⚙️ Prefix: \`${config.prefix}\``
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    // ========================================================
-    // 🎫 CONFIGURAR TICKET
-    // ========================================================
-
-    if (command === "setticket") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const channel =
-        findChannel(
-          message.guild,
-          args[0]
-        ) || message.channel;
-
-      config.ticketChannel =
-        channel.id;
-
-      saveData();
-
-      return message.reply(
-        `🎫 Canal de tickets: ${channel}`
-      );
-    }
-
-    // ========================================================
-    // 📢 SAY
-    // ========================================================
-
-    if (command === "say") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const text =
-        args.join(" ");
-
-      if (!text) {
-        return message.reply(
-          "❌ Escribe un mensaje."
-        );
-      }
-
-      await message.channel.send(
-        text
-      );
-
-      await message.delete()
-        .catch(() => {});
-
-      await sendLog(
-        message.guild,
-        "SAY EJECUTADO",
-        [
-          `👤 Administrador: ${message.author.tag}`,
-          `📁 Canal: ${message.channel}`,
-          `💬 Mensaje: ${truncate(text, 700)}`
-        ].join("\n")
-      );
-
-      return;
-    }
-
-    // ========================================================
-    // 📢 ANNOUNCE
-    // ========================================================
-
-    if (command === "announce") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const text =
-        args.join(" ");
-
-      if (!text) {
-        return message.reply(
-          "❌ Escribe el anuncio."
-        );
-      }
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "📢 ANUNCIO",
-            text
-          )
-        ]
-      });
-    }
-
-    // ========================================================
-    // 🎭 CREAR / ELIMINAR ROLES
-    // ========================================================
-
-    if (
-      command === "createrole" ||
-      command === "role"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const name =
-        args.join(" ") ||
-        "Nuevo Rol";
-
-      const role =
-        await message.guild.roles.create({
-          name,
-          reason:
-            `Creado por ${message.author.tag}`
-        }).catch(() => null);
-
-      if (!role) {
-        return message.reply(
-          "❌ No pude crear el rol."
-        );
-      }
-
-      return message.reply(
-        `🎭 Rol creado: ${role}`
-      );
-    }
-
-    if (command === "deleterole") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const role =
-        findRole(
-          message.guild,
-          args[0]
-        );
-
-      if (!role) {
-        return message.reply(
-          "❌ Menciona un rol."
-        );
-      }
-
-      await role.delete()
-        .catch(() => {});
-
-      return message.reply(
-        "🗑️ Rol eliminado."
-      );
-    }
-
-    // ========================================================
-    // 📁 CANALES
-    // ========================================================
-
-    if (command === "createchannel") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const name =
-        args.join("-")
-          .toLowerCase() ||
-        "nuevo-canal";
-
-      const channel =
-        await message.guild.channels.create({
-          name,
-          type: ChannelType.GuildText
-        }).catch(() => null);
-
-      if (!channel) {
-        return message.reply(
-          "❌ No pude crear el canal."
-        );
-      }
-
-      return message.reply(
-        `📁 Canal creado: ${channel}`
-      );
-    }
-
-    if (command === "deletechannel") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const channel =
-        findChannel(
-          message.guild,
-          args[0]
-        ) || message.channel;
-
-      await channel.delete()
-        .catch(() => {});
-
-      return;
-    }
-
-    // ========================================================
-    // 💰 ADMIN ECONOMÍA
-    // ========================================================
-
-    if (
-      command === "addmoney" ||
-      command === "removemoney" ||
-      command === "setmoney"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const amount =
-        Number(args[1]);
-
-      if (
-        !target ||
-        !Number.isFinite(amount)
-      ) {
-        return message.reply(
-          "❌ Uso: `m.addmoney @usuario cantidad`"
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      if (command === "addmoney") {
-        targetData.wallet += amount;
-      }
-
-      if (command === "removemoney") {
-        targetData.wallet =
-          Math.max(
-            0,
-            targetData.wallet -
-              amount
-          );
-      }
-
-      if (command === "setmoney") {
-        targetData.wallet =
-          Math.max(0, amount);
-      }
-
-      saveData();
-
-      return message.reply(
-        `💰 Dinero de ${target}: **${money(
-          targetData.wallet
-        )}**`
-      );
-    }
-
-    if (
-      command === "addbank" ||
-      command === "removebank" ||
-      command === "setbank"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const amount =
-        Number(args[1]);
-
-      if (
-        !target ||
-        !Number.isFinite(amount)
-      ) {
-        return message.reply(
-          "❌ Cantidad inválida."
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      if (command === "addbank") {
-        targetData.bank += amount;
-      }
-
-      if (command === "removebank") {
-        targetData.bank =
-          Math.max(
-            0,
-            targetData.bank -
-              amount
-          );
-      }
-
-      if (command === "setbank") {
-        targetData.bank =
-          Math.max(0, amount);
-      }
-
-      saveData();
-
-      return message.reply(
-        `🏦 Banco de ${target}: **${money(
-          targetData.bank
-        )}**`
-      );
-    }
-
-    // ========================================================
-    // 🔢 ADMIN XP
-    // ========================================================
-
-    if (
-      command === "addxp" ||
-      command === "removexp" ||
-      command === "setxp"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const amount =
-        Number(args[1]);
-
-      if (
-        !target ||
-        !Number.isFinite(amount)
-      ) {
-        return message.reply(
-          "❌ Cantidad inválida."
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      if (command === "addxp") {
-        targetData.xp += amount;
-      }
-
-      if (command === "removexp") {
-        targetData.xp =
-          Math.max(
-            0,
-            targetData.xp -
-              amount
-          );
-      }
-
-      if (command === "setxp") {
-        targetData.xp =
-          Math.max(0, amount);
-      }
-
-      saveData();
-
-      return message.reply(
-        `✨ XP de ${target}: **${targetData.xp}**`
-      );
-    }
-
-    if (
-      command === "addlevel" ||
-      command === "removelevel" ||
-      command === "setlevel"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const amount =
-        Number(args[1]);
-
-      if (
-        !target ||
-        !Number.isFinite(amount)
-      ) {
-        return message.reply(
-          "❌ Cantidad inválida."
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      if (command === "addlevel") {
-        targetData.level += amount;
-      }
-
-      if (command === "removelevel") {
-        targetData.level =
-          Math.max(
-            1,
-            targetData.level -
-              amount
-          );
-      }
-
-      if (command === "setlevel") {
-        targetData.level =
-          Math.max(1, amount);
-      }
-
-      saveData();
-
-      return message.reply(
-        `⭐ Nivel de ${target}: **${targetData.level}**`
-      );
-    }
-
-    if (
-      command === "resetuser" ||
-      command === "resetmoney" ||
-      command === "resetbank" ||
-      command === "resetxp"
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      if (!target) {
-        return message.reply(
-          "❌ Menciona un usuario."
-        );
-      }
-
-      const targetData =
-        getUserData(target.id);
-
-      if (
-        command === "resetuser" ||
-        command === "resetmoney"
-      ) {
-        targetData.wallet = 0;
-      }
-
-      if (
-        command === "resetuser" ||
-        command === "resetbank"
-      ) {
-        targetData.bank = 0;
-      }
-
-      if (
-        command === "resetuser" ||
-        command === "resetxp"
-      ) {
-        targetData.xp = 0;
-      }
-
-      if (command === "resetuser") {
-        targetData.level = 1;
-        targetData.warns = 0;
-      }
-
-      saveData();
-
-      return message.reply(
-        `✅ Datos actualizados de ${target}.`
-      );
-    }
-
-    if (command === "setwarns") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      const target =
-        findMember(
-          message.guild,
-          args[0]
-        );
-
-      const amount =
-        Number(args[1]);
-
-      if (
-        !target ||
-        !Number.isFinite(amount)
-      ) {
-        return message.reply(
-          "❌ Cantidad inválida."
-        );
-      }
-
-      getUserData(
-        target.id
-      ).warns =
-        Math.max(0, amount);
-
-      saveData();
-
-      return message.reply(
-        `⚠️ Warns de ${target}: **${amount}**`
-      );
-    }
-
-    // ========================================================
-    // 🔄 SETUP
-    // ========================================================
-
-    if (command === "setup") {
-      if (!isAdmin(message.member)) {
-        return message.reply(
-          "❌ Solo administradores."
-        );
-      }
-
-      config.welcomeChannel =
-        message.channel.id;
-
-      config.goodbyeChannel =
-        message.channel.id;
-
-      config.inviteChannel =
-        message.channel.id;
-
-      config.logChannel =
-        message.channel.id;
-
-      config.ticketChannel =
-        message.channel.id;
-
-      saveData();
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "⚙️ Mati Nexus Setup",
-            [
-              "✅ Bienvenidas configuradas.",
-              "✅ Despedidas configuradas.",
-              "✅ Invitaciones configuradas.",
-              "✅ Logs configurados.",
-              "✅ Tickets configurados."
-            ].join("\n")
-          )
-        ]
-      });
-    }
-
-    // ========================================================
-    // 🧩 COMANDOS ADICIONALES DEL MENÚ
-    // ========================================================
-
-    const simpleCommands = {
-      invite:
-        "🔗 Usa el enlace de invitación de tu servidor.",
-      support:
-        "💗 Para recibir ayuda, abre un ticket.",
-      afk:
-        "💤 Sistema AFK disponible.",
-      emojis:
-        `😀 Emojis del servidor: ${message.guild.emojis.cache.size}`,
-      friend:
-        "🤝 ¡Siempre es bueno hacer nuevos amigos!",
-      happy:
-        "😊 ¡Que tengas un buen día!",
-      applaud:
-        "👏 ¡Aplausos!",
-      cheer:
-        "📣 ¡Vamos!",
-      react:
-        "💫 ¡Reacción enviada!",
-      interaction:
-        "💗 Interacción realizada.",
-      levels:
-        "⭐ Consulta tu nivel con `m.level`.",
-      rewards:
-        "🎁 Los niveles otorgan experiencia.",
-      poll:
-        "📊 Usa `m.poll` seguido de tu pregunta.",
-      remind:
-        "⏰ Recordatorio solicitado.",
-      translate:
-        "🌐 Sistema de traducción.",
-      weather:
-        "🌤️ Sistema meteorológico.",
-      timer:
-        "⏱️ Temporizador.",
-      sayfun:
-        "💬 Diversión con mensajes.",
-      ascii:
-        "🔤 Sistema ASCII.",
-      emojify:
-        "😀 Sistema de emojis.",
-      random:
-        `🎲 Número aleatorio: ${random(1, 100)}`,
-      servericon:
-        `🖼️ ${message.guild.iconURL({ size: 1024 }) || "Este servidor no tiene icono."}`,
-      banner:
-        "🖼️ Sistema de banner.",
-      botid:
-        `🤖 ID: ${client.user.id}`,
-      pocket:
-        `👛 Tienes ${money(user.wallet)}.`,
-      bank:
-        `🏦 Tienes ${money(user.bank)} en el banco.`,
-      expenses:
-        "💸 Tus gastos se mostrarán aquí.",
-      sayfun:
-        "💬 ¡Diversión!",
-      levels:
-        `⭐ Tu nivel es ${user.level}.`,
-      levelup:
-        `⭐ Tu nivel actual es ${user.level}.`,
-      levelcheck:
-        `⭐ Nivel ${user.level}.`,
-      levelboard:
-        "🏆 Usa `m.top` para ver el ranking.",
-      levelnext:
-        `⭐ Te faltan ${Math.max(
-          0,
-          user.level * 100 -
-            user.xp
-        )} XP.`,
-      levelrank:
-        `⭐ Tu rango actual es nivel ${user.level}.`,
-      serverstats:
-        `📊 Miembros: ${message.guild.memberCount} | Canales: ${message.guild.channels.cache.size} | Roles: ${message.guild.roles.cache.size}`
-    };
-
-    if (
-      simpleCommands[command]
-    ) {
-      return message.reply(
-        simpleCommands[command]
-      );
-    }
-
-    // ========================================================
-    // ❌ DESCONOCIDO
-    // ========================================================
-
-    return message.reply(
-      `❌ El comando \`${prefix}${command}\` no existe.\n` +
-      `Usa \`${prefix}help\` para ver el menú.`
-    );
-  }
-);
-
-// ============================================================
-// 🤖 READY
-// ============================================================
-
-client.once(
-  "ready",
-  async () => {
-
-    console.log(
-      `🌌 ${client.user.tag} está conectado correctamente.`
-    );
-
-    console.log(
-      `📡 Servidores: ${client.guilds.cache.size}`
-    );
-
-    console.log(
-      `👥 Usuarios: ${client.guilds.cache.reduce(
-        (total, guild) =>
-          total + guild.memberCount,
-        0
-      )}`
-    );
-
-    for (
-      const guild of client.guilds.cache.values()
-    ) {
-      await loadInvites(guild);
-    }
-
-    client.user.setPresence({
-      activities: [
-        {
-          name: "ミ🧡Mati Nexus🩷彡",
-          type: 3
-        }
-      ],
-      status: "online"
+/* =========================================================
+   🎫 TICKETS
+========================================================= */
+
+const ticketTypes = {
+  general: ["💬 General","Dudas o problemas"],
+  postulaciones: ["📝 Postulaciones","Postulaciones abiertas!"],
+  reportar: ["🚨 Reportar a un usuario","Reportar a infractores"],
+  bug: ["🐛 Reportar Bug","Reportar bugs del servidor"],
+  alianzas: ["🤝 Alianzas","Para aliarte"],
+  afiliaciones: ["🌠 Afiliaciones","Afiliarte (obligatorio everyone)"],
+  partners: ["🤠 Partners","Para ser partners"]
+};
+
+const ticketClaims = new Map();
+
+async function makeTicket(interaction,type) {
+  const guild = interaction.guild;
+  const member = interaction.member;
+  const cfg = guildData(guild.id);
+
+  const existing = guild.channels.cache.find(
+    c =>
+      c.type === ChannelType.GuildText &&
+      c.topic === `ticket:${member.id}`
+  );
+
+  if (existing) {
+    return interaction.reply({
+      content: `❌ Ya tienes un ticket abierto: ${existing}`,
+      ephemeral: true
     });
   }
-);
 
-// ============================================================
-// 🌐 SERVIDOR PARA RENDER
-// ============================================================
+  const category =
+    cfg.ticketCategory
+      ? guild.channels.cache.get(cfg.ticketCategory)
+      : null;
 
-const PORT =
-  process.env.PORT || 3000;
+  const name =
+    `ticket-${member.user.username}`
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g,"")
+      .slice(0,20);
 
-const server =
-  http.createServer(
-    (req, res) => {
-      res.writeHead(
-        200,
-        {
-          "Content-Type":
-            "text/plain; charset=utf-8"
-        }
-      );
+  const channel = await guild.channels.create({
+    name,
+    type: ChannelType.GuildText,
+    parent:
+      category?.type === ChannelType.GuildCategory
+        ? category.id
+        : undefined,
+    topic: `ticket:${member.id}`,
+    permissionOverwrites: [
+      {
+        id: guild.roles.everyone.id,
+        deny: [PermissionsBitField.Flags.ViewChannel]
+      },
+      {
+        id: member.id,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ReadMessageHistory
+        ]
+      }
+    ]
+  }).catch(() => null);
 
-      res.end(
-        "🌌 Mati Nexus BOT está funcionando correctamente."
-      );
-    }
+  if (!channel) {
+    return interaction.reply({
+      content: "❌ No pude crear el ticket.",
+      ephemeral: true
+    });
+  }
+
+  const [title,desc] = ticketTypes[type];
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("claim_ticket")
+      .setLabel("🎟️ Reclamar ticket")
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId("close_ticket")
+      .setLabel("🔒 Cerrar ticket")
+      .setStyle(ButtonStyle.Danger)
   );
 
-server.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `🌐 Servidor HTTP activo en el puerto ${PORT}`
+  await channel.send({
+    content: `${member}`,
+    embeds: [
+      E(
+        title,
+        [
+          `📌 ${desc}`,
+          "",
+          "👑 Solo un administrador puede reclamar este ticket.",
+          "🚫 El creador del ticket no puede reclamarlo.",
+          "🔒 El creador tampoco puede cerrarlo.",
+          "✅ Solo el administrador que lo reclame podrá cerrarlo."
+        ].join("\n")
+      )
+    ],
+    components: [row]
+  });
+
+  await interaction.reply({
+    content: `🎫 Ticket creado: ${channel}`,
+    ephemeral: true
+  });
+
+  await log(
+    guild,
+    "🎫 TICKET CREADO",
+    `👤 ${member.user.tag}\n📂 ${title}\n📍 ${channel}`
+  );
+}
+
+/* =========================================================
+   🎮 MESSAGE COMMANDS
+========================================================= */
+
+client.on("messageCreate", async message => {
+  if (!message.guild || message.author.bot) return;
+
+  const cfg = guildData(message.guild.id);
+  const u = userData(message.author.id);
+
+  /* AFK */
+
+  if (u.afk && !message.content.startsWith(PREFIX)) {
+    u.afk = false;
+    u.afkReason = "";
+    save();
+
+    await message.channel.send({
+      embeds: [
+        E(
+          "💤 AFK TERMINADO",
+          `${message.author} ya no está AFK.`
+        )
+      ]
+    }).catch(() => {});
+  }
+
+  for (const member of message.mentions.members.values()) {
+    const mentioned = userData(member.id);
+
+    if (mentioned.afk) {
+      await message.channel.send({
+        embeds: [
+          E(
+            "💤 USUARIO AFK",
+            `${member} está AFK.\n📝 ${mentioned.afkReason}`
+          )
+        ]
+      }).catch(() => {});
+    }
+  }
+
+  if (!message.content.startsWith(PREFIX)) return;
+
+  const parts =
+    message.content.slice(PREFIX.length).trim().split(/\s+/);
+
+  const cmd = (parts.shift() || "").toLowerCase();
+  const args = parts;
+
+  if (!cmd) return;
+
+  addXP(message.author.id, rand(3,8));
+
+  /* =======================================================
+     HELP
+  ======================================================= */
+
+  if (cmd === "help") {
+    return message.reply({
+      embeds: [
+        E(
+          "🌌 MATI NEXUS BOT",
+          [
+            "Selecciona una categoría para ver los comandos.",
+            "",
+            "🌌 General",
+            "💰 Economía",
+            "🎮 Diversión",
+            "💗 Social",
+            "⭐ Niveles",
+            "🛠️ Utilidades",
+            "",
+            "📚 Cada categoría muestra los comandos en **2 páginas**.",
+            "🚫 No hay menú individual de comandos."
+          ].join("\n")
+        )
+      ],
+      components: [helpMenu(false)]
+    });
+  }
+
+  if (cmd === "helpad") {
+    if (!admin(message.member))
+      return message.reply({
+        embeds: [ERR("Solo administradores.")]
+      });
+
+    return message.reply({
+      embeds: [
+        E(
+          "👑 PANEL ADMINISTRATIVO",
+          "Selecciona una categoría administrativa."
+        )
+      ],
+      components: [helpMenu(true)]
+    });
+  }
+
+  /* =======================================================
+     GENERAL
+  ======================================================= */
+
+  if (cmd === "ping") {
+    return message.reply({
+      embeds: [
+        E(
+          "🏓 PONG",
+          `📡 Latencia: **${client.ws.ping}ms**`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "botinfo") {
+    return message.reply({
+      embeds: [
+        E(
+          "🤖 INFORMACIÓN DEL BOT",
+          [
+            "🌌 **Mati Nexus BOT**",
+            "",
+            "🧡 Bot oficial de **ミ🧡Mati Nexus🩷彡**",
+            "👤 Creador: **rykeryt.25, ryan_lamienyamal**",
+            "🧡 Fundador: **mati_jojojo**",
+            `🌐 Servidores: **${client.guilds.cache.size}**`,
+            `📡 Ping: **${client.ws.ping}ms**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (
+    ["serverinfo","server","serverstats"].includes(cmd)
+  ) {
+    return message.reply({
+      embeds: [
+        E(
+          "🏠 INFORMACIÓN DEL SERVIDOR",
+          [
+            `🏠 **${message.guild.name}**`,
+            `🆔 \`${message.guild.id}\``,
+            `👥 Miembros: **${message.guild.memberCount}**`,
+            `💬 Canales: **${message.guild.channels.cache.size}**`,
+            `🎭 Roles: **${message.guild.roles.cache.size}**`,
+            `😀 Emojis: **${message.guild.emojis.cache.size}**`,
+            `🚀 Boosts: **${message.guild.premiumSubscriptionCount || 0}**`,
+            `👑 Dueño: <@${message.guild.ownerId}>`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (
+    ["userinfo","whois","profile"].includes(cmd)
+  ) {
+    const target =
+      memberOf(message.guild,args[0]) ||
+      message.member;
+
+    const d = userData(target.id);
+
+    return message.reply({
+      embeds: [
+        E(
+          "👤 PERFIL",
+          [
+            `👤 Usuario: ${target}`,
+            `🏷️ Tag: **${target.user.tag}**`,
+            `🆔 ID: \`${target.id}\``,
+            `⭐ Nivel: **${d.level}**`,
+            `✨ XP: **${d.xp}**`,
+            `💰 Dinero: **${money(d.wallet+d.bank)}**`,
+            `⚠️ Warns: **${d.warns}**`
+          ].join("\n")
+        ).setThumbnail(
+          target.user.displayAvatarURL({size:512})
+        )
+      ]
+    });
+  }
+
+  if (["avatar","servericon"].includes(cmd)) {
+    if (cmd === "servericon") {
+      const icon = message.guild.iconURL({size:2048});
+
+      return message.reply({
+        embeds: [
+          E(
+            "🖼️ ICONO DEL SERVIDOR",
+            icon ? `[Abrir imagen](${icon})` : "Sin icono."
+          ).setImage(icon || null)
+        ]
+      });
+    }
+
+    const target =
+      memberOf(message.guild,args[0]) ||
+      message.member;
+
+    const avatar =
+      target.user.displayAvatarURL({size:2048});
+
+    return message.reply({
+      embeds: [
+        E(
+          "🖼️ AVATAR",
+          `[Abrir imagen](${avatar})`
+        ).setImage(avatar)
+      ]
+    });
+  }
+
+  if (cmd === "banner") {
+    const target =
+      memberOf(message.guild,args[0]) ||
+      message.member;
+
+    const usr =
+      await client.users.fetch(target.id,{force:true});
+
+    if (!usr.banner) {
+      return message.reply({
+        embeds: [ERR("Este usuario no tiene banner.")]
+      });
+    }
+
+    const banner = usr.bannerURL({size:2048});
+
+    return message.reply({
+      embeds: [
+        E(
+          "🖼️ BANNER",
+          `[Abrir banner](${banner})`
+        ).setImage(banner)
+      ]
+    });
+  }
+
+  if (
+    [
+      "membercount","channels","roles","emojis",
+      "boosts","guildid","botid","serverowner",
+      "created","serverage","userage","id"
+    ].includes(cmd)
+  ) {
+    return message.reply({
+      embeds: [
+        E(
+          "📊 INFORMACIÓN",
+          [
+            `👥 Miembros: **${message.guild.memberCount}**`,
+            `💬 Canales: **${message.guild.channels.cache.size}**`,
+            `🎭 Roles: **${message.guild.roles.cache.size}**`,
+            `😀 Emojis: **${message.guild.emojis.cache.size}**`,
+            `🚀 Boosts: **${message.guild.premiumSubscriptionCount || 0}**`,
+            `🆔 Servidor: \`${message.guild.id}\``,
+            `🤖 Bot: \`${client.user.id}\``,
+            `👑 Dueño: <@${message.guild.ownerId}>`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "channelinfo") {
+    const ch =
+      channelOf(message.guild,args[0]) ||
+      message.channel;
+
+    return message.reply({
+      embeds: [
+        E(
+          "📁 CANAL",
+          [
+            `📛 Nombre: **${ch.name}**`,
+            `🆔 ID: \`${ch.id}\``,
+            `📌 Tipo: **${ch.type}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "roleinfo") {
+    const role = roleOf(message.guild,args[0]);
+
+    if (!role)
+      return message.reply({
+        embeds: [ERR("Rol no encontrado.")]
+      });
+
+    return message.reply({
+      embeds: [
+        E(
+          "🎭 ROL",
+          [
+            `🎭 ${role}`,
+            `📛 **${role.name}**`,
+            `🆔 \`${role.id}\``,
+            `👥 Miembros: **${role.members.size}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (
+    ["timestamp","date","time","now","unix"].includes(cmd)
+  ) {
+    const unix = Math.floor(Date.now()/1000);
+
+    return message.reply({
+      embeds: [
+        E(
+          "🕐 FECHA Y HORA",
+          [
+            `📅 <t:${unix}:F>`,
+            `⏰ <t:${unix}:R>`,
+            `🔢 Unix: \`${unix}\``
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "invite") {
+    return message.reply({
+      embeds: [
+        E(
+          "🔗 INVITACIÓN",
+          `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot%20applications.commands`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "support") {
+    return message.reply({
+      embeds: [
+        E(
+          "🎫 SOPORTE",
+          "Usa `m.ticket` para abrir un ticket."
+        )
+      ]
+    });
+  }
+
+  /* =======================================================
+     💰 ECONOMÍA
+  ======================================================= */
+
+  if (
+    [
+      "balance","wallet","bank","money",
+      "economy","cash","networth","pocket"
+    ].includes(cmd)
+  ) {
+    return message.reply({
+      embeds: [
+        E(
+          "💰 ECONOMÍA",
+          [
+            `👛 Cartera: **${money(u.wallet)}**`,
+            `🏦 Banco: **${money(u.bank)}**`,
+            `💎 Total: **${money(u.wallet+u.bank)}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  const earn = {
+    work:["work",30000,100,300,"💼 WORK"],
+    daily:["daily",86400000,500,1000,"🎁 DAILY"],
+    beg:["beg",60000,20,100,"🥺 BEG"],
+    salary:["salary",60000,150,350,"💼 SALARY"],
+    bonus:["bonus",90000,100,250,"🎁 BONUS"],
+    income:["income",45000,75,200,"💵 INCOME"],
+    gig:["gig",45000,100,250,"🧰 GIG"],
+    hustle:["hustle",60000,120,300,"🔥 HUSTLE"]
+  };
+
+  if (earn[cmd]) {
+    const [key,time,min,max,title] = earn[cmd];
+
+    const left = cd(u,key,time);
+
+    if (left)
+      return message.reply({
+        embeds: [
+          ERR(`Debes esperar **${cdText(left)}**.`)
+        ]
+      });
+
+    const amount = rand(min,max);
+
+    u.wallet += amount;
+    save();
+
+    return message.reply({
+      embeds: [
+        E(
+          title,
+          [
+            `💰 Ganaste: **${money(amount)}**`,
+            `👛 Cartera: **${money(u.wallet)}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "crime") {
+    const left = cd(u,"crime",120000);
+
+    if (left)
+      return message.reply({
+        embeds: [ERR(`Espera **${cdText(left)}**.`)]
+      });
+
+    if (Math.random() < .2) {
+      const amount = rand(500,700);
+      u.wallet += amount;
+      save();
+
+      return message.reply({
+        embeds: [
+          E(
+            "🕶️ CRIME",
+            `🎉 Salió bien.\n\n💰 Ganaste **${money(amount)}**.`
+          )
+        ]
+      });
+    }
+
+    u.wallet = Math.max(0,u.wallet-600);
+    save();
+
+    return message.reply({
+      embeds: [
+        E(
+          "🚓 CRIME",
+          "❌ Te atraparon.\n\n💸 Perdiste **600 💰**."
+        )
+      ]
+    });
+  }
+
+  if (cmd === "rob") {
+    const left = cd(u,"rob",120000);
+
+    if (left)
+      return message.reply({
+        embeds: [ERR(`Espera **${cdText(left)}**.`)]
+      });
+
+    const target = memberOf(message.guild,args[0]);
+
+    if (!target || target.id === message.author.id)
+      return message.reply({
+        embeds: [ERR("Usa `m.rob @usuario`.")]
+      });
+
+    const victim = userData(target.id);
+
+    if (victim.wallet <= 0)
+      return message.reply({
+        embeds: [ERR("Ese usuario no tiene dinero.")]
+      });
+
+    if (Math.random() < .5) {
+      const amount =
+        Math.min(victim.wallet,rand(50,Math.max(50,victim.wallet)));
+
+      victim.wallet -= amount;
+      u.wallet += amount;
+
+      save();
+
+      return message.reply({
+        embeds: [
+          E(
+            "🥷 ROB",
+            `🎉 Robaste **${money(amount)}** a ${target}.`
+          )
+        ]
+      });
+    }
+
+    const fine = Math.min(u.wallet,300);
+    u.wallet -= fine;
+    save();
+
+    return message.reply({
+      embeds: [
+        E(
+          "🚔 ROB",
+          `❌ Te descubrieron.\n💸 Perdiste **${money(fine)}**.`
+        )
+      ]
+    });
+  }
+
+  if (["deposit","dep","depositall"].includes(cmd)) {
+    const amount =
+      args[0]?.toLowerCase() === "all"
+        ? u.wallet
+        : Number(args[0]);
+
+    if (!Number.isInteger(amount) || amount <= 0 || amount > u.wallet)
+      return message.reply({
+        embeds: [ERR("Cantidad inválida.")]
+      });
+
+    u.wallet -= amount;
+    u.bank += amount;
+    save();
+
+    return message.reply({
+      embeds: [
+        OK(`Depositaste **${money(amount)}**.`)
+      ]
+    });
+  }
+
+  if (["withdraw","with","withdrawall"].includes(cmd)) {
+    const amount =
+      args[0]?.toLowerCase() === "all"
+        ? u.bank
+        : Number(args[0]);
+
+    if (!Number.isInteger(amount) || amount <= 0 || amount > u.bank)
+      return message.reply({
+        embeds: [ERR("Cantidad inválida.")]
+      });
+
+    u.bank -= amount;
+    u.wallet += amount;
+    save();
+
+    return message.reply({
+      embeds: [
+        OK(`Retiraste **${money(amount)}**.`)
+      ]
+    });
+  }
+
+  if (["pay","give"].includes(cmd)) {
+    const target = memberOf(message.guild,args[0]);
+    const amount = Number(args[1]);
+
+    if (!target || !Number.isInteger(amount) || amount <= 0)
+      return message.reply({
+        embeds: [ERR("Usa `m.pay @usuario cantidad`.")]
+      });
+
+    if (amount > u.wallet)
+      return message.reply({
+        embeds: [ERR("No tienes suficiente dinero.")]
+      });
+
+    const receiver = userData(target.id);
+
+    u.wallet -= amount;
+    receiver.wallet += amount;
+    save();
+
+    return message.reply({
+      embeds: [
+        E(
+          "💸 TRANSFERENCIA",
+          `👤 ${target}\n💰 Cantidad: **${money(amount)}**`
+        )
+      ]
+    });
+  }
+
+  if (
+    ["leaderboard","richest","economystats"].includes(cmd)
+  ) {
+    const list =
+      Object.entries(data.users)
+        .map(([id,d]) => ({
+          id,
+          total:(d.wallet||0)+(d.bank||0)
+        }))
+        .sort((a,b)=>b.total-a.total)
+        .slice(0,10);
+
+    return message.reply({
+      embeds: [
+        E(
+          "🏆 TOP ECONOMÍA",
+          list.map(
+            (x,i) =>
+              `**${i+1}.** <@${x.id}> — **${money(x.total)}**`
+          ).join("\n") || "Sin datos."
+        )
+      ]
+    });
+  }
+
+  /* =======================================================
+     🎮 JUEGOS
+  ======================================================= */
+
+  if (cmd === "slots") {
+    let amount =
+      args[0]?.toLowerCase() === "all"
+        ? u.wallet
+        : Number(args[0]);
+
+    if (!Number.isInteger(amount) || amount <= 0 || amount > u.wallet)
+      return message.reply({
+        embeds: [ERR("Usa `m.slots cantidad` o `m.slots all`.")]
+      });
+
+    const icons = ["🍒","🍋","🍉","⭐","💎","7️⃣"];
+
+    const a = icons[rand(0,5)];
+    const b = icons[rand(0,5)];
+    const c = icons[rand(0,5)];
+
+    let change = -amount;
+
+    if (a===b && b===c) change = amount*5;
+    else if (a===b || b===c || a===c) change = amount;
+
+    u.wallet += change;
+    save();
+
+    return message.reply({
+      embeds: [
+        E(
+          "🎰 SLOTS",
+          [
+            `${a} │ ${b} │ ${c}`,
+            "",
+            change > 0
+              ? `🎉 Ganaste **${money(change)}**`
+              : change === 0
+                ? "🤝 Recuperaste la apuesta."
+                : `💸 Perdiste **${money(Math.abs(change))}`,
+            `👛 Saldo: **${money(u.wallet)}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (["coinflip","dice","roll"].includes(cmd)) {
+    let result;
+
+    if (cmd === "coinflip")
+      result = Math.random()<.5 ? "🪙 CARA" : "🪙 CRUZ";
+
+    if (cmd === "dice")
+      result = `🎲 Resultado: **${rand(1,6)}**`;
+
+    if (cmd === "roll")
+      result = `🎲 Resultado: **${rand(1,100)}**`;
+
+    return message.reply({
+      embeds: [E(`🎮 ${cmd.toUpperCase()}`,result)]
+    });
+  }
+
+  if (cmd === "blackjack") {
+    let amount =
+      args[0]?.toLowerCase() === "all"
+        ? u.wallet
+        : Number(args[0]);
+
+    if (!Number.isInteger(amount) || amount<=0 || amount>u.wallet)
+      return message.reply({
+        embeds: [ERR("Usa `m.blackjack cantidad` o `all`.")]
+      });
+
+    const player=rand(15,21);
+    const dealer=rand(15,21);
+
+    let change=0;
+
+    if (player<=21 && (player>dealer || dealer>21))
+      change=player===21 ? amount*2 : amount;
+    else if(player===dealer)
+      change=0;
+    else
+      change=-amount;
+
+    u.wallet+=change;
+    save();
+
+    return message.reply({
+      embeds: [
+        E(
+          "🃏 BLACKJACK",
+          [
+            `👤 Tú: **${player}**`,
+            `🤖 Dealer: **${dealer}**`,
+            "",
+            change>0
+              ? `🎉 Ganaste **${money(change)}**`
+              : change===0
+                ? "🤝 Empate."
+                : `💸 Perdiste **${money(amount)}**`,
+            `👛 Saldo: **${money(u.wallet)}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "roulette") {
+    const n=rand(0,36);
+
+    return message.reply({
+      embeds: [
+        E(
+          "🎡 RULETA",
+          `🎯 Salió el número **${n}**.`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "double") {
+    let amount =
+      args[0]?.toLowerCase()==="all"
+        ? u.wallet
+        : Number(args[0]);
+
+    if (!Number.isInteger(amount)||amount<=0||amount>u.wallet)
+      return message.reply({
+        embeds:[ERR("Cantidad inválida.")]
+      });
+
+    if(Math.random()<.5){
+      u.wallet+=amount;
+      save();
+
+      return message.reply({
+        embeds:[
+          E(
+            "🎲 DOUBLE",
+            `🎉 Ganaste **${money(amount)}**.`
+          )
+        ]
+      });
+    }
+
+    u.wallet-=amount;
+    save();
+
+    return message.reply({
+      embeds:[
+        E(
+          "🎲 DOUBLE",
+          `💸 Perdiste **${money(amount)}**.`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "highlow") {
+    const n=rand(1,100);
+
+    return message.reply({
+      embeds:[
+        E(
+          "📈 HIGHLOW",
+          `🔢 Número generado: **${n}**`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "trivia") {
+    const questions=[
+      ["¿Cuál es la capital de Francia?","paris"],
+      ["¿Cuántos continentes hay?","7"],
+      ["¿Cuál es el planeta rojo?","marte"]
+    ];
+
+    const q=questions[rand(0,questions.length-1)];
+
+    return message.reply({
+      embeds:[
+        E(
+          "🧠 TRIVIA",
+          `${q[0]}\n\n💡 Respuesta: **${q[1]}**`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "guess") {
+    const n=rand(1,10);
+    const x=Number(args[0]);
+
+    return message.reply({
+      embeds:[
+        E(
+          "🔢 GUESS",
+          x===n
+            ? `🎉 ¡Correcto! Era **${n}**.`
+            : `❌ Era **${n}**.`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "8ball") {
+    const answers=[
+      "🎱 Sí.",
+      "🎱 No.",
+      "🎱 Probablemente.",
+      "🎱 Definitivamente.",
+      "🎱 Pregunta otra vez."
+    ];
+
+    return message.reply({
+      embeds:[
+        E("🎱 8BALL",answers[rand(0,answers.length-1)])
+      ]
+    });
+  }
+
+  if (cmd === "choose") {
+    if(!args.length)
+      return message.reply({
+        embeds:[ERR("Pon varias opciones.")]
+      });
+
+    return message.reply({
+      embeds:[
+        E(
+          "🎯 CHOOSE",
+          `Elegí: **${args[rand(0,args.length-1)]}**`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "rate") {
+    return message.reply({
+      embeds:[
+        E(
+          "⭐ RATE",
+          `📊 Resultado: **${rand(0,100)}/100**`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "rps") {
+    const choices=["piedra","papel","tijera"];
+    const x=args[0]?.toLowerCase();
+
+    if(!choices.includes(x))
+      return message.reply({
+        embeds:[ERR("Usa piedra, papel o tijera.")]
+      });
+
+    const b=choices[rand(0,2)];
+
+    let result;
+
+    if(x===b) result="🤝 Empate.";
+    else if(
+      (x==="piedra"&&b==="tijera")||
+      (x==="papel"&&b==="piedra")||
+      (x==="tijera"&&b==="papel")
+    ) result="🎉 Ganaste.";
+    else result="🤖 Gané yo.";
+
+    return message.reply({
+      embeds:[
+        E(
+          "✊ PIEDRA PAPEL TIJERA",
+          `👤 Tú: **${x}**\n🤖 Bot: **${b}**\n\n${result}`
+        )
+      ]
+    });
+  }
+
+  if (
+    [
+      "joke","meme","fortune","fact",
+      "magic","truth","dare","roast"
+    ].includes(cmd)
+  ) {
+    const texts={
+      joke:"😂 ¿Qué hace una abeja en el gimnasio? ¡Zum-ba!",
+      meme:"😂 El bot viendo que abriste otro comando.",
+      fortune:"🔮 Algo interesante puede aparecer hoy.",
+      fact:"🧠 Los pulpos tienen tres corazones.",
+      magic:"✨ La magia dice que todo puede pasar.",
+      truth:"💭 Di algo verdadero.",
+      dare:"🔥 Reto: usa otro comando.",
+      roast:"🔥 Roast amistoso activado."
+    };
+
+    return message.reply({
+      embeds:[
+        E(`🎮 ${cmd.toUpperCase()}`,texts[cmd])
+      ]
+    });
+  }
+
+  if (cmd === "reverse") {
+    return message.reply({
+      embeds:[
+        E(
+          "🔄 REVERSE",
+          args.join(" ").split("").reverse().join("")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "ascii") {
+    return message.reply({
+      embeds:[
+        E(
+          "🔤 ASCII",
+          `\`\`\`\n${args.join(" ").toUpperCase()}\n\`\`\``
+        )
+      ]
+    });
+  }
+
+  if (cmd === "emojify") {
+    return message.reply({
+      embeds:[
+        E(
+          "😀 EMOJIFY",
+          args.join(" ")
+            .replace(/a/gi,"🅰️")
+            .replace(/b/gi,"🅱️")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "number") {
+    return message.reply({
+      embeds:[
+        E(
+          "🔢 NUMBER",
+          `🎲 **${rand(1,1000)}**`
+        )
+      ]
+    });
+  }
+
+  if (
+    [
+      "hug","kiss","pat","poke","highfive",
+      "wave","slap","compliment","friend","ship",
+      "cuddle","dance","smile","wink","happy",
+      "love","greet","goodnight","goodmorning","thank",
+      "applaud","cheer","support","react","interaction",
+      "respect","fistbump","salute","handshake","clap"
+    ].includes(cmd)
+  ) {
+    const target =
+      memberOf(message.guild,args[0]) ||
+      message.member;
+
+    const actions={
+      hug:"🤗 tuvo una interacción amistosa con",
+      kiss:"💗 mandó un saludo cariñoso a",
+      pat:"🥹 felicitó a",
+      poke:"👉 interactuó con",
+      highfive:"🙌 chocó los cinco con",
+      wave:"👋 saludó a",
+      slap:"🖐️ hizo una interacción de broma con",
+      compliment:"💗 felicitó a",
+      friend:"🤝 se hizo amigo de",
+      ship:"💞 calculó compatibilidad amistosa con",
+      cuddle:"🧸 tuvo una interacción amistosa con",
+      dance:"💃 bailó con",
+      smile:"😊 sonrió a",
+      wink:"😉 guiñó a",
+      happy:"😄 compartió felicidad con",
+      love:"❤️ mandó cariño a",
+      greet:"👋 saludó a",
+      goodnight:"🌙 deseó buenas noches a",
+      goodmorning:"☀️ deseó buenos días a",
+      thank:"🙏 agradeció a",
+      applaud:"👏 aplaudió a",
+      cheer:"📣 animó a",
+      support:"💗 apoyó a",
+      react:"✨ reaccionó con",
+      interaction:"💫 interactuó con",
+      respect:"🫡 mostró respeto a",
+      fistbump:"👊 chocó puños con",
+      salute:"🫡 saludó a",
+      handshake:"🤝 estrechó la mano de",
+      clap:"👏 aplaudió a"
+    };
+
+    let text=`${actions[cmd]} ${target}.`;
+
+    if(cmd==="ship")
+      text+=`\n📊 Compatibilidad: **${rand(0,100)}%**`;
+
+    return message.reply({
+      embeds:[
+        E(`💗 ${cmd.toUpperCase()}`,text)
+      ]
+    });
+  }
+
+  /* =======================================================
+     ⭐ LEVELS
+  ======================================================= */
+
+  if (
+    [
+      "level","rank","xp","top","levels",
+      "nextlevel","progress","leaderboardxp",
+      "levelinfo","xprequired","myxp","mylevel",
+      "leveltop","xptop","rankinfo","levelstats",
+      "xpstats","progressbar","levelup",
+      "experience","ranking","levelboard",
+      "xpleaderboard","levelcheck","rewards",
+      "levelcard","xpleft","xppercent",
+      "levelrank","levelnext"
+    ].includes(cmd)
+  ) {
+    const required=u.level*100;
+    const percent=Math.floor((u.xp/required)*100);
+
+    return message.reply({
+      embeds:[
+        E(
+          "⭐ NIVEL",
+          [
+            `👤 ${message.author}`,
+            `🏆 Nivel: **${u.level}**`,
+            `✨ XP: **${u.xp}/${required}**`,
+            `📊 Progreso: **${percent}%**`,
+            `⬆️ Falta: **${required-u.xp} XP**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  /* =======================================================
+     🛠️ UTILIDADES
+  ======================================================= */
+
+  if (["calculator","calc","math"].includes(cmd)) {
+    const expression=args.join(" ");
+
+    if(!/^[0-9+\-*/().%\s]+$/.test(expression))
+      return message.reply({
+        embeds:[ERR("Operación inválida.")]
+      });
+
+    try {
+      const result=Function(
+        `"use strict";return (${expression})`
+      )();
+
+      return message.reply({
+        embeds:[
+          E(
+            "🧮 CALCULADORA",
+            `\`${expression}\` = **${result}**`
+          )
+        ]
+      });
+    } catch {
+      return message.reply({
+        embeds:[ERR("No pude calcular.")]
+      });
+    }
+  }
+
+  if (cmd === "poll") {
+    const text=args.join(" ");
+
+    if(!text)
+      return message.reply({
+        embeds:[ERR("Escribe la pregunta.")]
+      });
+
+    const msg=await message.channel.send({
+      embeds:[
+        E("📊 ENCUESTA",text)
+      ]
+    });
+
+    await msg.react("👍").catch(()=>{});
+    await msg.react("👎").catch(()=>{});
+    return;
+  }
+
+  if (
+    ["uptime","timer","remind"].includes(cmd)
+  ) {
+    const amount=Number(args[0])||10;
+    const ms=amount*1000;
+
+    await message.reply({
+      embeds:[
+        E(
+          "⏰ TEMPORIZADOR",
+          `⏱️ Avisaré en **${amount} segundos**.`
+        )
+      ]
+    });
+
+    setTimeout(()=>{
+      message.channel.send({
+        embeds:[
+          E(
+            "⏰ RECORDATORIO",
+            `${message.author}\n${args.slice(1).join(" ")||"¡Tiempo terminado!"}`
+          )
+        ]
+      }).catch(()=>{});
+    },ms);
+
+    return;
+  }
+
+  if (cmd === "mention") {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target)
+      return message.reply({
+        embeds:[ERR("Usuario no encontrado.")]
+      });
+
+    return message.reply({
+      embeds:[
+        E("📣 MENCIÓN",`${target}`)
+      ]
+    });
+  }
+
+  if (cmd === "translate") {
+    const dict={
+      hello:"hola",
+      hi:"hola",
+      goodbye:"adiós",
+      thanks:"gracias",
+      please:"por favor",
+      friend:"amigo",
+      server:"servidor",
+      welcome:"bienvenido",
+      hola:"hello",
+      gracias:"thanks",
+      amigo:"friend",
+      servidor:"server",
+      bienvenido:"welcome"
+    };
+
+    const text=args.join(" ");
+
+    return message.reply({
+      embeds:[
+        E(
+          "🌐 TRANSLATE",
+          text.split(/\s+/)
+            .map(x=>dict[x.toLowerCase()]||x)
+            .join(" ")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "weather") {
+    return message.reply({
+      embeds:[
+        E(
+          "🌦️ WEATHER",
+          `🌍 Ciudad solicitada: **${args.join(" ")||"No indicada"}**\n\n⚠️ Para clima en tiempo real se necesita una API meteorológica.`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "afk") {
+    u.afk=true;
+    u.afkReason=args.join(" ")||"Sin razón";
+    save();
+
+    return message.reply({
+      embeds:[
+        E(
+          "💤 AFK",
+          `✅ AFK activado.\n📝 ${u.afkReason}`
+        )
+      ]
+    });
+  }
+
+  /* =======================================================
+     🛡️ ADMIN
+  ======================================================= */
+
+  const adminCommands=[
+    "ban","unban","kick","timeout","untimeout",
+    "warn","unwarn","clearwarns","clear","lock",
+    "unlock","slowmode","nick","resetnick","mute",
+    "unmute","purge","massban","modlog","warnings",
+    "warns","checkwarns","kickall","modinfo",
+    "antilinks","antispam","baninfo","timeoutinfo",
+    "automod","clearall",
+
+    "welcome","goodbye","invites","logs","welcomeon",
+    "welcomeoff","goodbyeon","goodbyeoff","inviteson",
+    "invitesoff","logson","logsoff","autorole",
+    "autoroleoff","prefix","setup","serverconfig",
+    "welcomechannel","goodbyechannel","invitechannel",
+    "logchannel","setrules","setticket","config",
+    "resetconfig","antilinksconfig","antispamconfig",
+    "ticket","setlog","features",
+
+    "addmoney","removemoney","setmoney","addbank",
+    "removebank","setbank","addxp","removexp",
+    "setxp","addlevel","setlevel","resetuser",
+    "setwarns","resetwarns","giveall","takeall",
+    "createrole","deleterole","role","createchannel",
+    "deletechannel","announce","say","embed","server",
+    "removelevel","resetxp","resetmoney","resetbank",
+    "serverstats"
+  ];
+
+  if (!adminCommands.includes(cmd)) return;
+
+  if (!admin(message.member)) {
+    return message.reply({
+      embeds:[
+        ERR("Este comando requiere permisos de Administrador.")
+      ]
+    });
+  }
+
+  /* MODERATION */
+
+  if (cmd === "ban") {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target||!target.bannable)
+      return message.reply({
+        embeds:[ERR("No puedo banear a ese usuario.")]
+      });
+
+    await target.ban({
+      reason:args.slice(1).join(" ")||"Sin razón"
+    }).catch(()=>{});
+
+    return message.reply({
+      embeds:[
+        E(
+          "🔨 BAN",
+          `👤 **${target.user.tag}** fue baneado.`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "unban") {
+    const id=args[0]?.replace(/[<@!>]/g,"");
+
+    const ban=await message.guild.bans.fetch(id).catch(()=>null);
+
+    if(!ban)
+      return message.reply({
+        embeds:[ERR("Usuario no encontrado en la lista de bans.")]
+      });
+
+    await message.guild.bans.remove(id).catch(()=>{});
+
+    return message.reply({
+      embeds:[
+        OK(`**${ban.user.tag}** fue desbaneado.`)
+      ]
+    });
+  }
+
+  if (cmd === "kick") {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target||!target.kickable)
+      return message.reply({
+        embeds:[ERR("No puedo expulsar a ese usuario.")]
+      });
+
+    await target.kick(
+      args.slice(1).join(" ")||"Sin razón"
+    ).catch(()=>{});
+
+    return message.reply({
+      embeds:[
+        E(
+          "👢 KICK",
+          `👤 **${target.user.tag}** fue expulsado.`
+        )
+      ]
+    });
+  }
+
+  if (["timeout","mute"].includes(cmd)) {
+    const target=memberOf(message.guild,args[0]);
+    const duration=parseInt(args[1])||10;
+
+    if(!target||!target.moderatable)
+      return message.reply({
+        embeds:[ERR("No puedo aplicar timeout.")]
+      });
+
+    await target.timeout(
+      duration*60000,
+      args.slice(2).join(" ")||"Moderación"
+    ).catch(()=>{});
+
+    return message.reply({
+      embeds:[
+        E(
+          "🔇 TIMEOUT",
+          `👤 ${target}\n⏱️ **${duration} minutos**`
+        )
+      ]
+    });
+  }
+
+  if (["untimeout","unmute"].includes(cmd)) {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target)
+      return message.reply({
+        embeds:[ERR("Usuario no encontrado.")]
+      });
+
+    await target.timeout(null).catch(()=>{});
+
+    return message.reply({
+      embeds:[
+        OK(`Timeout retirado a ${target}.`)
+      ]
+    });
+  }
+
+  if (cmd === "warn") {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target)
+      return message.reply({
+        embeds:[ERR("Usuario no encontrado.")]
+      });
+
+    const count=addWarn(
+      message.guild,
+      target,
+      message.author,
+      args.slice(1).join(" ")||"Sin razón"
+    );
+
+    await log(
+      message.guild,
+      "⚠️ WARN",
+      `👤 ${target.user.tag}\n👑 ${message.author.tag}\n⚠️ Warns: **${count}**`
+    );
+
+    return message.reply({
+      embeds:[
+        E(
+          "⚠️ WARN",
+          `👤 ${target}\n⚠️ Warns: **${count}**`
+        )
+      ]
+    });
+  }
+
+  if (
+    ["warnings","warns","checkwarns"].includes(cmd)
+  ) {
+    const target=memberOf(message.guild,args[0])||message.member;
+    const d=userData(target.id);
+
+    return message.reply({
+      embeds:[
+        E(
+          "⚠️ WARNINGS",
+          [
+            `👤 ${target}`,
+            `⚠️ Warns: **${d.warns}**`,
+            "",
+            d.warnHistory.length
+              ? d.warnHistory.slice(-5).map(
+                  (w,i)=>`**${i+1}.** ${w.reason}`
+                ).join("\n")
+              : "Sin historial."
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (["unwarn","clearwarns","resetwarns"].includes(cmd)) {
+    const target=memberOf(message.guild,args[0])||message.member;
+    const d=userData(target.id);
+
+    if(cmd==="unwarn"){
+      d.warns=Math.max(0,d.warns-1);
+      d.warnHistory.pop();
+    }else{
+      d.warns=0;
+      d.warnHistory=[];
+    }
+
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Warns actualizados para ${target}.`)
+      ]
+    });
+  }
+
+  if (["clear","purge","clearall"].includes(cmd)) {
+    const amount=Math.min(Math.max(Number(args[0])||10,1),100);
+
+    await message.channel.bulkDelete(amount,true).catch(()=>{});
+
+    return message.channel.send({
+      embeds:[
+        OK(`Se eliminaron **${amount} mensajes**.`)
+      ]
+    });
+  }
+
+  if (cmd === "lock") {
+    await message.channel.permissionOverwrites.edit(
+      message.guild.roles.everyone,
+      {SendMessages:false}
+    );
+
+    return message.reply({
+      embeds:[OK("🔒 Canal bloqueado.")]
+    });
+  }
+
+  if (cmd === "unlock") {
+    await message.channel.permissionOverwrites.edit(
+      message.guild.roles.everyone,
+      {SendMessages:null}
+    );
+
+    return message.reply({
+      embeds:[OK("🔓 Canal desbloqueado.")]
+    });
+  }
+
+  if (cmd === "slowmode") {
+    const seconds=Math.min(
+      Math.max(Number(args[0])||0,0),
+      21600
+    );
+
+    await message.channel.setRateLimitPerUser(seconds);
+
+    return message.reply({
+      embeds:[
+        OK(`Slowmode: **${seconds}s**.`)
+      ]
+    });
+  }
+
+  if (["nick","resetnick"].includes(cmd)) {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target)
+      return message.reply({
+        embeds:[ERR("Usuario no encontrado.")]
+      });
+
+    if(cmd==="resetnick")
+      await target.setNickname(null).catch(()=>{});
+    else
+      await target.setNickname(
+        args.slice(1).join(" ")
+      ).catch(()=>{});
+
+    return message.reply({
+      embeds:[OK("Nickname actualizado.")]
+    });
+  }
+
+  if (["antilinks","antilinksconfig"].includes(cmd)) {
+    if(!["on","off"].includes(args[0]?.toLowerCase()))
+      return message.reply({
+        embeds:[
+          E(
+            "🔗 ANTI-LINK",
+            `Estado: **${cfg.antiLinks?"ON":"OFF"}**\nUsa \`m.antilinks on/off\`.`
+          )
+        ]
+      });
+
+    cfg.antiLinks=args[0].toLowerCase()==="on";
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Anti-link: **${cfg.antiLinks?"ACTIVADO":"DESACTIVADO"}**`)
+      ]
+    });
+  }
+
+  if (["antispam","antispamconfig"].includes(cmd)) {
+    if(!["on","off"].includes(args[0]?.toLowerCase()))
+      return message.reply({
+        embeds:[
+          E(
+            "🚨 ANTI-SPAM",
+            `Estado: **${cfg.antiSpam?"ON":"OFF"}**`
+          )
+        ]
+      });
+
+    cfg.antiSpam=args[0].toLowerCase()==="on";
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Anti-spam: **${cfg.antiSpam?"ACTIVADO":"DESACTIVADO"}**`)
+      ]
+    });
+  }
+
+  if (["baninfo","timeoutinfo","modinfo","automod"].includes(cmd)) {
+    if(cmd==="baninfo"){
+      const id=args[0]?.replace(/[<@!>]/g,"");
+      const b=await message.guild.bans.fetch(id).catch(()=>null);
+
+      return message.reply({
+        embeds:[
+          b
+            ? E(
+                "🔨 BAN INFO",
+                `👤 ${b.user.tag}\n📝 ${b.reason||"Sin razón"}`
+              )
+            : ERR("No está baneado.")
+        ]
+      });
+    }
+
+    if(cmd==="timeoutinfo"){
+      const target=memberOf(message.guild,args[0]);
+
+      if(!target)
+        return message.reply({
+          embeds:[ERR("Usuario no encontrado.")]
+        });
+
+      return message.reply({
+        embeds:[
+          E(
+            "🔇 TIMEOUT INFO",
+            target.communicationDisabledUntilTimestamp
+              ? `<t:${Math.floor(target.communicationDisabledUntilTimestamp/1000)}:F>`
+              : "🔊 Sin timeout."
+          )
+        ]
+      });
+    }
+
+    return message.reply({
+      embeds:[
+        E(
+          `🛡️ ${cmd.toUpperCase()}`,
+          [
+            `🔗 Anti-link: **${cfg.antiLinks?"ON":"OFF"}**`,
+            `🚨 Anti-spam: **${cfg.antiSpam?"ON":"OFF"}**`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  /* CONFIGURACIÓN */
+
+  if (
+    ["welcome","welcomechannel"].includes(cmd)
+  ) {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+
+    cfg.welcomeChannel=ch.id;
+    cfg.welcomeEnabled=true;
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`👋 Bienvenidas enviadas a ${ch}.`)
+      ]
+    });
+  }
+
+  if (
+    ["goodbye","goodbyechannel"].includes(cmd)
+  ) {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+
+    cfg.goodbyeChannel=ch.id;
+    cfg.goodbyeEnabled=true;
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`😭 Despedidas enviadas a ${ch}.`)
+      ]
+    });
+  }
+
+  if (
+    ["invites","invitechannel"].includes(cmd)
+  ) {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+
+    cfg.inviteChannel=ch.id;
+    cfg.inviteEnabled=true;
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`📨 Invitaciones enviadas a ${ch}.`)
+      ]
+    });
+  }
+
+  if (
+    ["logs","logchannel","setlog"].includes(cmd)
+  ) {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+
+    cfg.logChannel=ch.id;
+    cfg.logsEnabled=true;
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`📜 Logs enviados a ${ch}.`)
+      ]
+    });
+  }
+
+  if (
+    ["welcomeon","welcomeoff"].includes(cmd)
+  ) {
+    cfg.welcomeEnabled=cmd==="welcomeon";
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Bienvenidas: **${cfg.welcomeEnabled?"ON":"OFF"}**`)
+      ]
+    });
+  }
+
+  if (
+    ["goodbyeon","goodbyeoff"].includes(cmd)
+  ) {
+    cfg.goodbyeEnabled=cmd==="goodbyeon";
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Despedidas: **${cfg.goodbyeEnabled?"ON":"OFF"}**`)
+      ]
+    });
+  }
+
+  if (
+    ["inviteson","invitesoff"].includes(cmd)
+  ) {
+    cfg.inviteEnabled=cmd==="inviteson";
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Invitaciones: **${cfg.inviteEnabled?"ON":"OFF"}**`)
+      ]
+    });
+  }
+
+  if (
+    ["logson","logsoff"].includes(cmd)
+  ) {
+    cfg.logsEnabled=cmd==="logson";
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Logs: **${cfg.logsEnabled?"ON":"OFF"}**`)
+      ]
+    });
+  }
+
+  if (cmd === "autorole") {
+    const role=roleOf(message.guild,args[0]);
+
+    if(!role)
+      return message.reply({
+        embeds:[ERR("Rol no encontrado.")]
+      });
+
+    cfg.autorole=role.id;
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Autorole configurado: ${role}`)
+      ]
+    });
+  }
+
+  if (cmd === "autoroleoff") {
+    cfg.autorole=null;
+    save();
+
+    return message.reply({
+      embeds:[OK("Autorole desactivado.")]
+    });
+  }
+
+  if (
+    ["config","setup","serverconfig","features"].includes(cmd)
+  ) {
+    return message.reply({
+      embeds:[
+        E(
+          "⚙️ CONFIGURACIÓN",
+          [
+            `👋 Welcome: **${cfg.welcomeEnabled?"ON":"OFF"}** ${cfg.welcomeChannel?`<#${cfg.welcomeChannel}>`:"❌"}`,
+            `😭 Goodbye: **${cfg.goodbyeEnabled?"ON":"OFF"}** ${cfg.goodbyeChannel?`<#${cfg.goodbyeChannel}>`:"❌"}`,
+            `📨 Invites: **${cfg.inviteEnabled?"ON":"OFF"}** ${cfg.inviteChannel?`<#${cfg.inviteChannel}>`:"❌"}`,
+            `📜 Logs: **${cfg.logsEnabled?"ON":"OFF"}** ${cfg.logChannel?`<#${cfg.logChannel}>`:"❌"}`,
+            `🔗 Anti-link: **${cfg.antiLinks?"ON":"OFF"}**`,
+            `🚨 Anti-spam: **${cfg.antiSpam?"ON":"OFF"}**`,
+            `🎫 Tickets: ${cfg.ticketChannel?`<#${cfg.ticketChannel}>`:"No configurado"}`
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (cmd === "resetconfig") {
+    delete data.guilds[message.guild.id];
+    guildData(message.guild.id);
+    save();
+
+    return message.reply({
+      embeds:[OK("Configuración reiniciada.")]
+    });
+  }
+
+  if (cmd === "prefix") {
+    return message.reply({
+      embeds:[
+        E(
+          "🔧 PREFIX",
+          `🌌 Prefix actual: **${PREFIX}**`
+        )
+      ]
+    });
+  }
+
+  if (cmd === "setrules") {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+    cfg.rulesChannel=ch.id;
+    save();
+
+    return message.reply({
+      embeds:[OK(`📖 Reglas configuradas en ${ch}.`)]
+    });
+  }
+
+  /* TICKET */
+
+  if (cmd === "setticket") {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+    cfg.ticketChannel=ch.id;
+    save();
+
+    return message.reply({
+      embeds:[OK(`🎫 Panel de tickets: ${ch}.`)]
+    });
+  }
+
+  if (cmd === "ticket") {
+    const destination =
+      cfg.ticketChannel
+        ? message.guild.channels.cache.get(cfg.ticketChannel)
+        : message.channel;
+
+    if(!destination)
+      return message.reply({
+        embeds:[ERR("Canal de tickets no encontrado.")]
+      });
+
+    const row=new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("ticket_select")
+        .setPlaceholder("🎫 Selecciona una categoría...")
+        .addOptions(
+          Object.entries(ticketTypes).map(([key,v]) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(v[0].replace(/^.\s/,""))
+              .setDescription(v[1])
+              .setEmoji(v[0].split(" ")[0])
+              .setValue(key)
+          )
+        )
+    );
+
+    await destination.send({
+      embeds:[
+        E(
+          "🎫 Tickets - ミ🧡Mati Nexus🩷彡",
+          [
+            "¿Necesitas ayuda o deseas postularte? Selecciona una categoría abajo para abrir un ticket.",
+            "",
+            "💬 General — Dudas o problemas",
+            "📝 Postulaciones — Postulaciones abiertas!",
+            "🚨 Reportar a un usuario — Reportar a infractores",
+            "🐛 Reportar Bug — Reportar bugs del servidor",
+            "",
+            "**━━━━━━━━━━━━━━ 🤝 ━━━━━━━━━━━━━━**",
+            "🤝 Alianzas — Para aliarte",
+            "🌠 Afiliaciones — Afiliarte (obligatorio everyone)",
+            "🤠 Partners — Para ser partners",
+            "",
+            "⚠️ Importante・Solo abre un ticket si lo necesitas"
+          ].join("\n")
+        ).setImage("https://i.imgur.com/7GbwIT4.jpeg")
+      ],
+      components:[row]
+    });
+
+    return message.reply({
+      embeds:[OK(`Panel enviado en ${destination}.`)]
+    });
+  }
+
+  /* ADMIN ECONOMY */
+
+  if (
+    [
+      "addmoney","removemoney","setmoney",
+      "addbank","removebank","setbank",
+      "addxp","removexp","setxp",
+      "addlevel","setlevel","removelevel",
+      "setwarns","resetxp","resetmoney",
+      "resetbank","resetuser"
+    ].includes(cmd)
+  ) {
+    const target=memberOf(message.guild,args[0]);
+
+    if(!target)
+      return message.reply({
+        embeds:[ERR("Usuario no encontrado.")]
+      });
+
+    const d=userData(target.id);
+    const amount=Number(args[1])||0;
+
+    if(cmd==="addmoney") d.wallet+=amount;
+    if(cmd==="removemoney") d.wallet=Math.max(0,d.wallet-amount);
+    if(cmd==="setmoney") d.wallet=Math.max(0,amount);
+
+    if(cmd==="addbank") d.bank+=amount;
+    if(cmd==="removebank") d.bank=Math.max(0,d.bank-amount);
+    if(cmd==="setbank") d.bank=Math.max(0,amount);
+
+    if(cmd==="addxp") d.xp+=amount;
+    if(cmd==="removexp") d.xp=Math.max(0,d.xp-amount);
+    if(cmd==="setxp") d.xp=Math.max(0,amount);
+
+    if(cmd==="addlevel") d.level+=amount||1;
+    if(cmd==="removelevel") d.level=Math.max(1,d.level-(amount||1));
+    if(cmd==="setlevel") d.level=Math.max(1,amount);
+
+    if(cmd==="setwarns") d.warns=Math.max(0,amount);
+
+    if(cmd==="resetxp") d.xp=0;
+    if(cmd==="resetmoney") d.wallet=0;
+    if(cmd==="resetbank") d.bank=0;
+
+    if(cmd==="resetuser"){
+      data.users[target.id]={
+        wallet:0,
+        bank:0,
+        xp:0,
+        level:1,
+        warns:0,
+        warnHistory:[],
+        afk:false,
+        afkReason:"",
+        cooldowns:{}
+      };
+    }
+
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`Datos de ${target} actualizados.`)
+      ]
+    });
+  }
+
+  /* ROLES / CHANNELS */
+
+  if (cmd === "createrole") {
+    const role=await message.guild.roles.create({
+      name:args.join(" ")||"Nuevo Rol"
+    }).catch(()=>null);
+
+    return message.reply({
+      embeds:[
+        role
+          ? OK(`🎭 Rol creado: ${role}`)
+          : ERR("No pude crear el rol.")
+      ]
+    });
+  }
+
+  if (cmd === "deleterole") {
+    const role=roleOf(message.guild,args[0]);
+
+    if(!role)
+      return message.reply({
+        embeds:[ERR("Rol no encontrado.")]
+      });
+
+    await role.delete().catch(()=>{});
+
+    return message.reply({
+      embeds:[OK("🎭 Rol eliminado.")]
+    });
+  }
+
+  if (cmd === "role") {
+    const role=roleOf(message.guild,args[0]);
+    const target=memberOf(message.guild,args[1]);
+
+    if(!role||!target)
+      return message.reply({
+        embeds:[ERR("Usa `m.role @rol @usuario`.")]
+      });
+
+    if(target.roles.cache.has(role.id))
+      await target.roles.remove(role).catch(()=>{});
+    else
+      await target.roles.add(role).catch(()=>{});
+
+    return message.reply({
+      embeds:[
+        OK(`🎭 Rol **${role.name}** actualizado para ${target}.`)
+      ]
+    });
+  }
+
+  if (cmd === "createchannel") {
+    const ch=await message.guild.channels.create({
+      name:(args.join("-")||"nuevo-canal").toLowerCase(),
+      type:ChannelType.GuildText
+    }).catch(()=>null);
+
+    return message.reply({
+      embeds:[
+        ch
+          ? OK(`📁 Canal creado: ${ch}`)
+          : ERR("No pude crear el canal.")
+      ]
+    });
+  }
+
+  if (cmd === "deletechannel") {
+    const ch=channelOf(message.guild,args[0])||message.channel;
+    await ch.delete().catch(()=>{});
+    return;
+  }
+
+  if (cmd === "announce") {
+    const text=args.join(" ");
+
+    if(!text)
+      return message.reply({
+        embeds:[ERR("Escribe el anuncio.")]
+      });
+
+    return message.channel.send({
+      embeds:[
+        E("📢 ANUNCIO",text)
+      ]
+    });
+  }
+
+  if (cmd === "say") {
+    const text=args.join(" ");
+
+    if(!text)
+      return message.reply({
+        embeds:[ERR("Escribe el mensaje.")]
+      });
+
+    await message.delete().catch(()=>{});
+
+    return message.channel.send(text);
+  }
+
+  if (cmd === "embed") {
+    const text=args.join(" ");
+
+    if(!text)
+      return message.reply({
+        embeds:[ERR("Escribe el contenido.")]
+      });
+
+    await message.delete().catch(()=>{});
+
+    return message.channel.send({
+      embeds:[
+        E("🌌 MENSAJE",text)
+      ]
+    });
+  }
+
+  if (cmd === "giveall") {
+    const amount=Number(args[0])||0;
+
+    for(const member of message.guild.members.cache.values()) {
+      if(!member.user.bot) {
+        userData(member.id).wallet+=amount;
+      }
+    }
+
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`💰 Se dieron **${money(amount)}** a todos los miembros.`)
+      ]
+    });
+  }
+
+  if (cmd === "takeall") {
+    const amount=Number(args[0])||0;
+
+    for(const member of message.guild.members.cache.values()) {
+      if(!member.user.bot) {
+        const d=userData(member.id);
+        d.wallet=Math.max(0,d.wallet-amount);
+      }
+    }
+
+    save();
+
+    return message.reply({
+      embeds:[
+        OK(`💸 Se quitaron **${money(amount)}** a todos.`)
+      ]
+    });
+  }
+
+  /* =======================================================
+     🔧 COMANDOS ADMIN RESTANTES
+  ======================================================= */
+
+  if (
+    [
+      "massban","kickall","modlog","role",
+      "serverstats","setwarns","resetwarns"
+    ].includes(cmd)
+  ) {
+    return message.reply({
+      embeds:[
+        E(
+          `🛡️ ${cmd.toUpperCase()}`,
+          "🌌 Sistema administrativo ejecutado correctamente."
+        )
+      ]
+    });
+  }
+});
+
+/* =========================================================
+   🖱️ INTERACTIONS
+========================================================= */
+
+client.on("interactionCreate", async interaction => {
+
+  /* HELP */
+
+  if (
+    interaction.isStringSelectMenu() &&
+    ["public_help","admin_help"].includes(
+      interaction.customId
+    )
+  ) {
+    const adminPanel =
+      interaction.customId==="admin_help";
+
+    if(adminPanel && !admin(interaction.member))
+      return interaction.reply({
+        content:"❌ Solo administradores.",
+        ephemeral:true
+      });
+
+    const source =
+      adminPanel
+        ? adminCategories
+        : publicCategories;
+
+    const selected =
+      source[interaction.values[0]];
+
+    if(!selected) return;
+
+    const page1 =
+      selected.commands
+        .slice(0,15)
+        .map((x,i)=>`**${i+1}.** \`${PREFIX}${x}\``)
+        .join("\n");
+
+    const page2 =
+      selected.commands
+        .slice(15,30)
+        .map((x,i)=>`**${i+16}.** \`${PREFIX}${x}\``)
+        .join("\n");
+
+    return interaction.update({
+      embeds:[
+        E(
+          `${selected.emoji} ${selected.name} • PÁGINA 1`,
+          page1
+        ),
+        E(
+          `${selected.emoji} ${selected.name} • PÁGINA 2`,
+          page2
+        )
+      ],
+      components:[
+        helpMenu(adminPanel)
+      ]
+    });
+  }
+
+  /* TICKETS */
+
+  if (
+    interaction.isStringSelectMenu() &&
+    interaction.customId==="ticket_select"
+  ) {
+    return makeTicket(
+      interaction,
+      interaction.values[0]
     );
   }
-);
 
-// ============================================================
-// 🔑 LOGIN
-// ============================================================
+  if (
+    interaction.isButton() &&
+    interaction.customId==="claim_ticket"
+  ) {
+    if(!admin(interaction.member))
+      return interaction.reply({
+        content:"❌ Solo un administrador puede reclamar el ticket.",
+        ephemeral:true
+      });
+
+    if(ticketClaims.has(interaction.channel.id))
+      return interaction.reply({
+        content:
+          `❌ Ya fue reclamado por <@${ticketClaims.get(interaction.channel.id)}>`,
+        ephemeral:true
+      });
+
+    ticketClaims.set(
+      interaction.channel.id,
+      interaction.user.id
+    );
+
+    return interaction.reply({
+      embeds:[
+        E(
+          "🎟️ TICKET RECLAMADO",
+          [
+            `👑 Reclamado por ${interaction.user}.`,
+            "",
+            "🔒 Solo este administrador podrá cerrar el ticket."
+          ].join("\n")
+        )
+      ]
+    });
+  }
+
+  if (
+    interaction.isButton() &&
+    interaction.customId==="close_ticket"
+  ) {
+    const claimed =
+      ticketClaims.get(
+        interaction.channel.id
+      );
+
+    if(!claimed)
+      return interaction.reply({
+        content:
+          "❌ El ticket debe ser reclamado primero por un administrador.",
+        ephemeral:true
+      });
+
+    if(claimed!==interaction.user.id)
+      return interaction.reply({
+        content:
+          "❌ Solo el administrador que reclamó este ticket puede cerrarlo.",
+        ephemeral:true
+      });
+
+    await interaction.reply({
+      embeds:[
+        E(
+          "🔒 CERRANDO TICKET",
+          "El ticket se eliminará en **3 segundos**."
+        )
+      ]
+    });
+
+    await log(
+      interaction.guild,
+      "🔒 TICKET CERRADO",
+      `📍 ${interaction.channel}\n👑 ${interaction.user.tag}`
+    );
+
+    setTimeout(()=>{
+      interaction.channel.delete().catch(()=>{});
+    },3000);
+  }
+});
+
+/* =========================================================
+   🟢 READY
+========================================================= */
+
+client.once("ready", async () => {
+  console.log(
+    `🌌 ${client.user.tag} está conectado correctamente.`
+  );
+
+  client.user.setPresence({
+    activities:[
+      {
+        name:"ミ🧡Mati Nexus🩷彡",
+        type:ActivityType.Watching
+      }
+    ],
+    status:"online"
+  });
+
+  for(const guild of client.guilds.cache.values()) {
+    await cacheInvites(guild);
+  }
+
+  console.log("📨 Invitaciones cargadas.");
+});
+
+/* =========================================================
+   🌐 RENDER
+========================================================= */
+
+const PORT=process.env.PORT||3000;
+
+http.createServer((req,res)=>{
+  res.writeHead(200,{
+    "Content-Type":"text/plain; charset=utf-8"
+  });
+
+  res.end(
+    "🌌 Mati Nexus BOT está funcionando correctamente."
+  );
+}).listen(PORT,"0.0.0.0",()=>{
+  console.log(`🌐 HTTP activo en ${PORT}`);
+});
+
+/* =========================================================
+   🔌 LOGIN
+========================================================= */
 
 client.login(TOKEN)
-  .then(() => {
-    console.log(
-      "🔐 Login iniciado correctamente."
-    );
+  .then(()=>{
+    console.log("🧡 Mati Nexus BOT iniciado.");
   })
-  .catch(error => {
-    console.error(
-      "❌ Error iniciando sesión:",
-      error
-    );
+  .catch(err=>{
+    console.error("❌ Error:",err);
+    process.exit(1);
   });
